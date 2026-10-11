@@ -1,0 +1,86 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  NAME: blocknet-faraday-sigbench
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: linux, arch: arm64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos, arch: amd64, runner: macos-latest, target: x86_64-apple-darwin }
+          - { os: macos, arch: arm64, runner: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows, arch: amd64, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: windows, arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+          rustflags: ""
+          cache-key: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --bin sig-bench --target ${{ matrix.target }}
+
+      - name: package
+        if: matrix.os != 'windows'
+        run: |
+          mkdir -p dist/pkg
+          bin="$NAME-${{ matrix.arch }}-${{ matrix.os }}"
+          cp "target/${{ matrix.target }}/release/sig-bench" "dist/pkg/$bin"
+          chmod +x "dist/pkg/$bin"
+          tar -C dist/pkg -czf "dist/$bin.tar.gz" "$bin"
+          rm -r dist/pkg
+
+      - name: package
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $bin = "$env:NAME-${{ matrix.arch }}-${{ matrix.os }}"
+          New-Item -ItemType Directory -Force dist/pkg | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/sig-bench.exe" "dist/pkg/$bin.exe"
+          Compress-Archive -Path "dist/pkg/$bin.exe" -DestinationPath "dist/$bin.zip"
+          Remove-Item -Recurse dist/pkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}-${{ matrix.arch }}-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - run: cd dist && sha256sum * > SHA256SUMS
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes
