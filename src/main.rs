@@ -9,21 +9,16 @@ mod mining;
 mod ui;
 
 #[cfg(unix)]
-#[path = "../../anim-demo/src/algo.rs"]
 mod algo;
 #[cfg(unix)]
 mod dash;
 #[cfg(unix)]
-#[path = "../../anim-demo/src/fx.rs"]
 mod fx;
 #[cfg(unix)]
-#[path = "../../anim-demo/src/gfx.rs"]
 mod gfx;
 #[cfg(unix)]
-#[path = "../../anim-demo/src/machine.rs"]
 mod machine;
 #[cfg(unix)]
-#[path = "../../anim-demo/src/scenes.rs"]
 mod scenes;
 
 use std::io::{IsTerminal, Write};
