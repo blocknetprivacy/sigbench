@@ -1,0 +1,29 @@
+[package]
+publish = false
+name = "pqc-poc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha3 = "0.10"
+p3-air = { version = "=0.8.0" }
+p3-batch-stark = { version = "=0.8.0" }
+p3-challenger = { version = "=0.8.0" }
+p3-commit = { version = "=0.8.0" }
+p3-dft = { version = "=0.8.0" }
+p3-field = { version = "=0.8.0" }
+p3-fri = { version = "=0.8.0" }
+p3-koala-bear = { version = "=0.8.0" }
+p3-lookup = { version = "=0.8.0" }
+p3-merkle-tree = { version = "=0.8.0" }
+p3-symmetric = { version = "=0.8.0" }
+p3-uni-stark = { version = "=0.8.0" }
+p3-security = { version = "=0.8.0" }
+p3-maybe-rayon = { version = "=0.8.0", features = ["parallel"] }
+postcard = { version = "1.1", features = ["alloc"] }
+rand = { version = "=0.10.3", default-features = false, features = ["sys_rng"] }
+chacha20 = { version = "=0.10.2", default-features = false, features = ["rng"] }
+p3-circuit = { version = "0.1.0", git = "https://github.com/Plonky3/Plonky3-recursion.git", rev = "485455c0487a0a71d8fb9ccf9f04258f5c7397d5" }
+p3-circuit-prover = { version = "0.1.0", git = "https://github.com/Plonky3/Plonky3-recursion.git", rev = "485455c0487a0a71d8fb9ccf9f04258f5c7397d5", features = ["parallel"] }
+p3-poseidon2-circuit-air = { version = "0.1.0", git = "https://github.com/Plonky3/Plonky3-recursion.git", rev = "485455c0487a0a71d8fb9ccf9f04258f5c7397d5" }
+p3-recursion = { version = "0.1.0", git = "https://github.com/Plonky3/Plonky3-recursion.git", rev = "485455c0487a0a71d8fb9ccf9f04258f5c7397d5" }
