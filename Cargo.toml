@@ -4,7 +4,7 @@ members = ["pqc"]
 [package]
 publish = false
 name = "sig-bench"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Head-to-head benchmark: legacy Blocknet RingCT signatures vs Faraday post-quantum STARK spend proofs (time / CPU / memory)."
 
