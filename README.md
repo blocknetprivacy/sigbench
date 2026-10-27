@@ -12,9 +12,9 @@ Both sides call the *real* code, not a re-implementation:
 | what | RingCT CLSAG ring signature | Faraday unified spend STARK proof |
 | from | `blocknet_crypto` (the node's consensus crypto) | `pqc_poc::faraday_fold` (the foldable option-B DSL port) |
 | curve / field | Ristretto255, ring size 16 | KoalaBear + Poseidon2, Plonky3 |
-| security | classical (pre-quantum) | funds-grade ~128-bit, post-quantum |
+| security | classical (pre-quantum) | post-quantum (hash-based) |
 | one op proves | key ownership + amount linking | membership + key image + balance |
-| per-tx proof | 1120 bytes | ~381 KB (relay) |
+| per-tx proof | 1120 bytes | ~238 KB in this snapshot; about 1.4 MB at the fork's final settings (relay) |
 | on-chain cost | ~6 KB/tx (ring inline) | ~2.3 KB/tx metadata + one O(1) folded proof per block |
 
 "sign/prove" and "verify" are timed **separately** for both. The new side is the
@@ -24,7 +24,7 @@ then measures the Faraday PQC transaction and block wire sizes offline against t
 schema. Nothing touches a live chain.
 
 It also benchmarks the **mining proof-of-work hash**: the current Argon2id 2 GiB
-(`crypto-rs/src/pow.rs`) against the Faraday fork's Argon2d 512 MiB. Both use t=1, p=1,
+(`crypto-rs/src/pow.rs`) against the candidates for the fork, such as Argon2d 512 MiB. Both use t=1, p=1,
 version 0x13 and a 32-byte output. The 2 GiB reproduction is proven byte-identical to the
 real `blocknet_pow_hash` before timing.
 
@@ -147,7 +147,7 @@ view and prints only that static report.
 
   MINING HASH (t=1 p=1), time per hash / hashrate:
   Argon2id 2 GiB (current)    ~1.12 s   0.89 H/s
-  Argon2d 512 MiB (Faraday)   ~0.28 s   3.54 H/s
+  Argon2d 512 MiB (candidate) ~0.28 s   3.54 H/s
 
   Measured 2026-10-07 on Plonky3 0.8.0 + Plonky3-recursion 485455c. The FRI config scores
   ~60-67 provable bits (soundcalc); it is not yet funds-grade.
