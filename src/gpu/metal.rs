@@ -7,7 +7,7 @@ use metal::{
 };
 
 use super::{reference, Device};
-use crate::miner::{self, Mined};
+use crate::miner::Mined;
 use crate::mining::{self, Pow};
 
 const KERNELS: &str = include_str!("kernels.metal");
@@ -67,110 +67,12 @@ fn read(b: &Buffer, len: usize) -> Vec<u8> {
 pub fn mine(dev: &Device, pow: Pow, seconds: f64, stop: &AtomicBool, progress: &mut dyn FnMut(Mined)) -> Result<Mined, String> {
     let gpu = Gpu::open(dev)?;
     let header = mining::header();
-    let mined = match pow {
-        Pow::Argon2(mib) => mine_argon2(&gpu, dev, mib, &header, seconds, stop, progress, None)?,
-        fast => mine_fast(&gpu, fast, &header, seconds, stop, progress)?,
-    };
-    Ok(mined)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn mine_argon2(
-    gpu: &Gpu,
-    dev: &Device,
-    mib: u32,
-    header: &[u8],
-    seconds: f64,
-    stop: &AtomicBool,
-    progress: &mut dyn FnMut(Mined),
-    force_lanes: Option<usize>,
-) -> Result<Mined, String> {
-    let argon2_type: u32 = if mib == mining::FARADAY_MIB { 0 } else { 2 };
-    let m_blocks: u32 = mib * 1024;
-    let t_cost: u32 = 1;
-    let constants = [m_blocks, t_cost, argon2_type];
-    let (seed_p, fill_p, final_p) = (gpu.pipeline("build_seed_blocks_kernel", &constants)?, gpu.pipeline("argon2id_fill_kernel", &constants)?, gpu.pipeline("final_hashes_kernel", &constants)?);
-    let lane_bytes = m_blocks as u64 * 1024;
-    let by_ram = miner::cpu_threads(Pow::Argon2(mib)) as u64;
-    let lanes = force_lanes.unwrap_or((dev.mem_bytes * 9 / 10 / lane_bytes).min(by_ram).min(64) as usize);
-    if lanes == 0 {
-        return Err(format!("no room for a {mib} MiB lane in free RAM"));
-    }
-    let lane_memory = gpu.buffer(lanes as u64 * lane_bytes);
-    let seed_blocks = gpu.buffer(lanes as u64 * 256 * 8);
-    let last_blocks = gpu.buffer(lanes as u64 * 128 * 8);
-    let hashes_out = gpu.buffer(lanes as u64 * 32);
-    let header_buf = gpu.buffer_from(header);
-    let nonce_buf = gpu.buffer(lanes as u64 * 8);
-    let (cancel, completed, target, found) = (gpu.buffer(4), gpu.buffer(4), gpu.buffer(32), gpu.buffer(4));
-    let lanes_u32 = lanes as u32;
-    let header_len = header.len() as u32;
-    let m_cost_kib = m_blocks;
-    let (one, zero) = (1u32, 0u32);
-    let scalar = |e: &metal::ComputeCommandEncoderRef, i: u64, v: &u32| e.set_bytes(i, 4, v as *const u32 as *const _);
-
-    let run_batch = |base: u64, check: bool| -> Vec<u8> {
-        let nonces: Vec<u8> = (0..lanes as u64).flat_map(|i| (base + i).to_le_bytes()).collect();
-        unsafe { std::ptr::copy_nonoverlapping(nonces.as_ptr(), nonce_buf.contents() as *mut u8, nonces.len()) };
-        let cmd = gpu.queue.new_command_buffer();
-        let e = cmd.new_compute_command_encoder();
-        e.set_compute_pipeline_state(&seed_p);
-        e.set_buffer(0, Some(&header_buf), 0);
-        e.set_buffer(1, Some(&nonce_buf), 0);
-        e.set_buffer(2, Some(&seed_blocks), 0);
-        scalar(e, 3, &header_len);
-        scalar(e, 4, &lanes_u32);
-        scalar(e, 5, &m_cost_kib);
-        scalar(e, 6, &t_cost);
-        e.dispatch_threads(MTLSize::new(lanes_u32.div_ceil(64) as u64 * 64, 1, 1), MTLSize::new(64, 1, 1));
-        e.end_encoding();
-        let e = cmd.new_compute_command_encoder();
-        e.set_compute_pipeline_state(&fill_p);
-        e.set_buffer(0, Some(&seed_blocks), 0);
-        e.set_buffer(1, Some(&lane_memory), 0);
-        e.set_buffer(2, Some(&last_blocks), 0);
-        e.set_buffer(3, Some(&cancel), 0);
-        e.set_buffer(4, Some(&completed), 0);
-        e.set_buffer(5, Some(&target), 0);
-        e.set_buffer(6, Some(&found), 0);
-        scalar(e, 7, &lanes_u32);
-        scalar(e, 8, &lanes_u32);
-        scalar(e, 9, &one);
-        scalar(e, 10, &zero);
-        e.dispatch_thread_groups(MTLSize::new(lanes as u64, 1, 1), MTLSize::new(32, 1, 1));
-        e.end_encoding();
-        if check {
-            let e = cmd.new_compute_command_encoder();
-            e.set_compute_pipeline_state(&final_p);
-            e.set_buffer(0, Some(&last_blocks), 0);
-            e.set_buffer(1, Some(&hashes_out), 0);
-            scalar(e, 2, &lanes_u32);
-            e.dispatch_threads(MTLSize::new(lanes_u32.div_ceil(64) as u64 * 64, 1, 1), MTLSize::new(64, 1, 1));
-            e.end_encoding();
-        }
-        cmd.commit();
-        cmd.wait_until_completed();
-        if check { read(&hashes_out, lanes * 32) } else { Vec::new() }
-    };
-
-    let base = 0xC0FF_EE00u64;
-    let got = run_batch(base, true);
-    if got.get(..32) != Some(&reference(Pow::Argon2(mib), header, base)[..]) {
-        return Err("GPU Argon2 hash differs from the CPU hash".into());
-    }
-    let start = Instant::now();
-    let (mut hashes, mut nonce) = (0u64, base + lanes as u64);
-    while start.elapsed().as_secs_f64() < seconds && !stop.load(Ordering::Relaxed) {
-        run_batch(nonce, false);
-        nonce += lanes as u64;
-        hashes += lanes as u64;
-        progress(Mined { threads: lanes, hashes, secs: start.elapsed().as_secs_f64() });
-    }
-    Ok(Mined { threads: lanes, hashes, secs: start.elapsed().as_secs_f64() })
+    let _ = dev;
+    mine_fast(&gpu, pow, &header, seconds, stop, progress)
 }
 
 fn mine_fast(gpu: &Gpu, pow: Pow, header: &[u8], seconds: f64, stop: &AtomicBool, progress: &mut dyn FnMut(Mined)) -> Result<Mined, String> {
-    let p = gpu.pipeline(if pow == Pow::Blake2b512 { "blake2b512_mine_kernel" } else { "sha3_512_mine_kernel" }, &[1024, 1, 2])?;
+    let p = gpu.pipeline(match pow { Pow::Blake2b512 => "blake2b512_mine_kernel" }, &[])?;
     let total: u64 = 256 * 1024;
     let sink = gpu.buffer(total * 8);
     let first = gpu.buffer(64);
@@ -237,8 +139,5 @@ mod tests {
                 Err(err) => panic!("{pow:?}: {err}"),
             }
         }
-        let gpu = Gpu::open(dev).unwrap();
-        let m = mine_argon2(&gpu, dev, mining::FARADAY_MIB, &mining::header(), 2.0, &AtomicBool::new(false), &mut |_| {}, Some(1)).unwrap();
-        eprintln!("{}: Argon2d 512 MiB on 1 lane: {:.3} H/s", dev.name, m.rate());
     }
 }

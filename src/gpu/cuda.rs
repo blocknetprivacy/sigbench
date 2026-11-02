@@ -77,93 +77,13 @@ impl Gpu {
 pub fn mine(dev: &Device, pow: Pow, seconds: f64, stop: &AtomicBool, progress: &mut dyn FnMut(Mined)) -> Result<Mined, String> {
     let gpu = Gpu::open(dev)?;
     let header = mining::header();
-    let mined = match pow {
-        Pow::Argon2(mib) => mine_argon2(&gpu, mib, &header, seconds, stop, progress)?,
-        fast => mine_fast(&gpu, fast, &header, seconds, stop, progress)?,
-    };
-    Ok(mined)
-}
-
-fn mine_argon2(gpu: &Gpu, mib: u32, header: &[u8], seconds: f64, stop: &AtomicBool, progress: &mut dyn FnMut(Mined)) -> Result<Mined, String> {
-    let e = |x: cudarc::driver::DriverError| format!("{x:?}");
-    let s = &gpu.stream;
-    let (seed_k, fill_k, final_k) = (gpu.func("build_seed_blocks_kernel")?, gpu.func("argon2id_fill_kernel")?, gpu.func("final_hashes_kernel")?);
-    let argon2_type: u32 = if mib == mining::FARADAY_MIB { 0 } else { 2 };
-    let m_cost_kib: u32 = mib * 1024;
-    let m_blocks: u32 = m_cost_kib;
-    let t_cost: u32 = 1;
-    let lane_words = m_blocks as usize * 128;
-    let (free, _) = cudarc::driver::result::mem_get_info().map_err(e)?;
-    let lanes = ((free as f64 * 0.85) as usize / (lane_words * 8)).min(256);
-    if lanes == 0 {
-        return Err(format!("one {mib} MiB lane does not fit in free GPU memory ({} MiB free)", free >> 20));
-    }
-    let mut lane_memory = unsafe { s.alloc::<u64>(lanes * lane_words) }.map_err(e)?;
-    let mut seed_blocks = s.alloc_zeros::<u64>(lanes * 256).map_err(e)?;
-    let mut last_blocks = s.alloc_zeros::<u64>(lanes * 128).map_err(e)?;
-    let mut hashes_out = s.alloc_zeros::<u8>(lanes * 32).map_err(e)?;
-    let header_dev = s.clone_htod(header).map_err(e)?;
-    let cancel = s.alloc_zeros::<u32>(1).map_err(e)?;
-    let mut completed = s.alloc_zeros::<u32>(1).map_err(e)?;
-    let lanes_u32 = lanes as u32;
-    let header_len = header.len() as u32;
-    let one: u32 = 1;
-
-    let mut run_batch = |base: u64, check: bool| -> Result<Option<Vec<u8>>, String> {
-        let nonces: Vec<u64> = (0..lanes as u64).map(|i| base + i).collect();
-        let nonce_dev = s.clone_htod(&nonces).map_err(e)?;
-        unsafe {
-            let mut l = s.launch_builder(&seed_k);
-            l.arg(&header_dev).arg(&header_len).arg(&nonce_dev).arg(&lanes_u32).arg(&m_cost_kib).arg(&t_cost).arg(&mut seed_blocks).arg(&argon2_type);
-            l.launch(LaunchConfig { grid_dim: (lanes_u32.div_ceil(64), 1, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 }).map_err(e)?;
-            let mut l = s.launch_builder(&fill_k);
-            l.arg(&seed_blocks)
-                .arg(&lanes_u32)
-                .arg(&lanes_u32)
-                .arg(&one)
-                .arg(&m_blocks)
-                .arg(&t_cost)
-                .arg(&mut lane_memory)
-                .arg(&mut last_blocks)
-                .arg(&cancel)
-                .arg(&mut completed)
-                .arg(&argon2_type);
-            l.launch(LaunchConfig { grid_dim: (lanes_u32, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 }).map_err(e)?;
-            if check {
-                let mut l = s.launch_builder(&final_k);
-                l.arg(&last_blocks).arg(&lanes_u32).arg(&mut hashes_out);
-                l.launch(LaunchConfig { grid_dim: (lanes_u32.div_ceil(64), 1, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 }).map_err(e)?;
-            }
-        }
-        s.synchronize().map_err(e)?;
-        if check {
-            Ok(Some(s.clone_dtoh(&hashes_out).map_err(e)?))
-        } else {
-            Ok(None)
-        }
-    };
-
-    let base = 0xC0FF_EE00u64;
-    let got = run_batch(base, true)?.unwrap_or_default();
-    if got.get(..32) != Some(&reference(Pow::Argon2(mib), header, base)[..]) {
-        return Err("GPU Argon2 hash differs from the CPU hash".into());
-    }
-    let start = Instant::now();
-    let mut hashes = 0u64;
-    let mut nonce = base + lanes as u64;
-    while start.elapsed().as_secs_f64() < seconds && !stop.load(Ordering::Relaxed) {
-        run_batch(nonce, false)?;
-        nonce += lanes as u64;
-        hashes += lanes as u64;
-        progress(Mined { threads: lanes, hashes, secs: start.elapsed().as_secs_f64() });
-    }
-    Ok(Mined { threads: lanes, hashes, secs: start.elapsed().as_secs_f64() })
+    mine_fast(&gpu, pow, &header, seconds, stop, progress)
 }
 
 fn mine_fast(gpu: &Gpu, pow: Pow, header: &[u8], seconds: f64, stop: &AtomicBool, progress: &mut dyn FnMut(Mined)) -> Result<Mined, String> {
     let e = |x: cudarc::driver::DriverError| format!("{x:?}");
     let s = &gpu.stream;
-    let k = gpu.func(if pow == Pow::Blake2b512 { "blake2b512_mine_kernel" } else { "sha3_512_mine_kernel" })?;
+    let k = gpu.func(match pow { Pow::Blake2b512 => "blake2b512_mine_kernel" })?;
     let (blocks, threads): (u32, u32) = (2048, 256);
     let total = blocks as u64 * threads as u64;
     let mut sink = s.alloc_zeros::<u64>(total as usize).map_err(e)?;
@@ -219,7 +139,7 @@ mod tests {
     #[test]
     fn ptx_matches_the_kernel_source() {
         assert_eq!(PTX_SRC.trim(), kernels_sha(), "kernels.cu changed: run `cargo test --release write_ptx -- --ignored` where NVRTC is available");
-        assert!(PTX.contains(".entry argon2id_fill_kernel"));
+        assert!(PTX.contains(".entry blake2b512_mine_kernel") && !PTX.contains("argon2"));
     }
 
     #[test]

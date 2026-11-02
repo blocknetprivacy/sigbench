@@ -1,0 +1,14 @@
+[package]
+publish = false
+name = "vole"
+version = "0.3.0"
+edition = "2021"
+build = "build.rs"
+links = "fastpq_tx"
+
+[dependencies]
+ml-kem = "=0.3.2"
+sha3 = "0.10"
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }

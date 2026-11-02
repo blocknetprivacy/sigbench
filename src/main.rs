@@ -1,11 +1,15 @@
+#[allow(dead_code)]
+mod address;
+mod art;
 mod bench;
 mod brand;
-mod faraday_tx;
 mod legacy;
 mod metrics;
 mod gpu;
 mod miner;
 mod mining;
+#[allow(dead_code)]
+mod pow;
 mod ui;
 
 #[cfg(unix)]
@@ -25,8 +29,8 @@ use std::io::{IsTerminal, Write};
 use std::sync::atomic::AtomicBool;
 
 use bench::{Ev, OpKind};
+use vole::wire;
 use metrics::{process_rss_bytes, Stats};
-use pqc_poc::faraday5 as ff;
 
 const N_LEGACY: usize = 100;
 const N_NEW: usize = 100;
@@ -52,11 +56,11 @@ fn run_static(host: String, cores: usize, color: bool) {
     ui::banner(color, &host, cores, N_LEGACY, N_NEW);
     println!();
 
-    let prep = ff::prepare();
-    match ff::self_check() {
-        Ok(()) => ui::check(color, true, "Faraday circuit conformance -- D1 W32 hash == native Poseidon2"),
+    let prep = vole::prepare();
+    match vole::self_check(&prep) {
+        Ok(()) => ui::check(color, true, "spend proof gate -- honest 2x2 proof verifies; changed fee and flipped byte rejected"),
         Err(e) => {
-            ui::check(color, false, &format!("Faraday circuit conformance FAILED: {e}"));
+            ui::check(color, false, &format!("spend proof gate FAILED: {e}"));
             std::process::exit(1);
         }
     }
@@ -78,23 +82,23 @@ fn run_static(host: String, cores: usize, color: bool) {
     let mut lsc = Vec::new();
     let mut lv = Vec::new();
     let mut lvc = Vec::new();
-    let mut np = Vec::new();
-    let mut npc = Vec::new();
-    let mut nv = Vec::new();
-    let mut nvc = Vec::new();
+    let k = vole::SHAPES.len();
+    let mut np = vec![Vec::new(); k];
+    let mut npc = vec![Vec::new(); k];
+    let mut nv = vec![Vec::new(); k];
+    let mut nvc = vec![Vec::new(); k];
     let mut leg_mem = Vec::new();
     let mut new_mem = Vec::new();
-    let mut proof_bytes = 0usize;
+    let mut proof_bytes = vec![0usize; k];
     let mut hash_rows: Vec<ui::HashRow> = Vec::new();
     let mut gpu_names: Vec<String> = Vec::new();
     let mut gpu_now: Vec<(String, Result<miner::Mined, String>)> = Vec::new();
-    let mut faithful: Option<bool> = None;
     let stop = AtomicBool::new(false);
 
     {
         let mut cb = |ev: Ev| match ev {
             Ev::Totals(_, _) => {}
-            Ev::ProofSize(n) => proof_bytes = n,
+            Ev::ProofSize(i, n) => proof_bytes[i] = n,
             Ev::Op(k, t, c) => {
                 let rss = process_rss_bytes() as f64 / (1024.0 * 1024.0);
                 match k {
@@ -110,32 +114,25 @@ fn run_static(host: String, cores: usize, color: bool) {
                         leg_mem.push(rss);
                         progress("legacy verify", lv.len(), N_LEGACY);
                     }
-                    OpKind::NewProve => {
-                        np.push(t);
-                        npc.push(c);
+                    OpKind::NewProve(i) => {
+                        np[i].push(t);
+                        npc[i].push(c);
                         new_mem.push(rss);
                     }
-                    OpKind::NewVerify => {
-                        nv.push(t);
-                        nvc.push(c);
+                    OpKind::NewVerify(i) => {
+                        nv[i].push(t);
+                        nvc[i].push(c);
                         new_mem.push(rss);
-                        eprint!("\r  [new] proof {}/{}   last prove {:>7.0} ms      ", np.len(), N_NEW, np.last().copied().unwrap_or(0.0));
+                        let n = vole::SHAPES[i];
+                        eprint!("\r  [new {n}x{n}] proof {}/{}   last prove {:>6.1} ms      ", np[i].len(), N_NEW, np[i].last().copied().unwrap_or(0.0));
                         let _ = std::io::stderr().flush();
                     }
                 }
             }
             Ev::HashPlan => eprintln!(
-                "\n  mining hash: Argon2id 2 GiB, Argon2d 512 MiB, BLAKE2b-512 and SHA3-512 ({} s each)",
+                "\n  mining hash: BLAKE2b-512, personalization blocknet/pow/v1 ({} s)",
                 mining::MINE_SECONDS
             ),
-            Ev::HashVerify(None) => {
-                eprint!("\r  verifying reproduction vs blocknet_pow_hash (2 GiB)...   ");
-                let _ = std::io::stderr().flush();
-            }
-            Ev::HashVerify(Some(ok)) => {
-                faithful = Some(ok);
-                eprintln!("\r  hash faithfulness (2 GiB == consensus): {}          ", if ok { "OK" } else { "MISMATCH" });
-            }
             Ev::HashSkip(pow, _reason) => {
                 hash_rows.push(ui::HashRow { pow, mined: miner::Mined::default(), ran: false, gpu: Vec::new() });
             }
@@ -166,48 +163,33 @@ fn run_static(host: String, cores: usize, color: bool) {
 
     let mut ops = Vec::new();
     if !ls.is_empty() {
-        ops.push(ui::Op { side: ui::Side::Legacy, verb: "sign", time: Stats::of(&ls), cpu: Stats::of(&lsc) });
+        ops.push(ui::Op { side: ui::Side::Legacy, shape: 0, verb: "sign", time: Stats::of(&ls), cpu: Stats::of(&lsc) });
     }
     if !lv.is_empty() {
-        ops.push(ui::Op { side: ui::Side::Legacy, verb: "verify", time: Stats::of(&lv), cpu: Stats::of(&lvc) });
+        ops.push(ui::Op { side: ui::Side::Legacy, shape: 0, verb: "verify", time: Stats::of(&lv), cpu: Stats::of(&lvc) });
     }
-    if !np.is_empty() {
-        ops.push(ui::Op { side: ui::Side::New, verb: "prove", time: Stats::of(&np), cpu: Stats::of(&npc) });
-    }
-    if !nv.is_empty() {
-        ops.push(ui::Op { side: ui::Side::New, verb: "verify", time: Stats::of(&nv), cpu: Stats::of(&nvc) });
+    for (i, &n) in vole::SHAPES.iter().enumerate() {
+        if !np[i].is_empty() {
+            ops.push(ui::Op { side: ui::Side::New, shape: n, verb: "prove", time: Stats::of(&np[i]), cpu: Stats::of(&npc[i]) });
+        }
+        if !nv[i].is_empty() {
+            ops.push(ui::Op { side: ui::Side::New, shape: n, verb: "verify", time: Stats::of(&nv[i]), cpu: Stats::of(&nvc[i]) });
+        }
     }
 
-    let faraday = if proof_bytes > 0 && !mining::fold_fits() {
-        eprintln!("  block fold: skipped (needs {} GiB of RAM; the fold peaks near 9.3 GB)", mining::FOLD_MIN_RAM_GIB);
-        None
-    } else if proof_bytes > 0 {
-        eprintln!("  block fold: proving + folding two spends into one block proof (several minutes)...");
-        let fold = ff::fold_two();
-        let (tx_meta, tx_relay, block_n, block_bytes) =
-            faraday_tx::measure(proof_bytes, fold.folded_bytes);
-        Some(ui::FaradayReport {
-            tx_meta,
-            per_tx_proof: proof_bytes,
-            tx_relay,
-            folded_bytes: fold.folded_bytes,
-            fold_secs: fold.fold_wall.as_secs_f64(),
-            block_n,
-            block_bytes,
-        })
-    } else {
-        None
-    };
+    let proofs: Vec<(usize, usize)> =
+        vole::SHAPES.iter().zip(&proof_bytes).filter(|(_, b)| **b > 0).map(|(n, b)| (*n, *b)).collect();
+    let wire: Vec<wire::WireRow> = proofs.iter().map(|(n, b)| wire::measure(*n, *b)).collect();
 
     let report = ui::Report {
         sig_bytes,
-        proof_bytes,
+        proofs,
         ops,
         leg_mem_mb: (!leg_mem.is_empty()).then(|| Stats::of(&leg_mem)),
         new_mem_mb: (!new_mem.is_empty()).then(|| Stats::of(&new_mem)),
         hashes: hash_rows,
-        faithful,
-        faraday,
+        wire,
+        set_ms: vole::set_digest_ms(&prep),
     };
     ui::results(color, &report);
 }

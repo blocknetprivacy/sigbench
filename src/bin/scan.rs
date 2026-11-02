@@ -70,12 +70,11 @@ macro_rules! measure_kem {
         let (matched, _) = time_per_call(|i| {
             let r = sha3_512(&[b"blocknet_r", ss.as_slice()]);
             let enc = sha3_512(&[b"blocknet_enc", ss.as_slice()]);
-            let nonce = sha3_512(&[b"blocknet_nonce", ss.as_slice()]);
-            let lane = |x: &[u8; 64]| -> [u32; 16] {
-                core::array::from_fn(|j| u32::from_le_bytes(x[4 * j..4 * j + 4].try_into().unwrap()) % 0x7f00_0001)
-            };
-            black_box((enc, nonce));
-            black_box(pqc_poc::faraday_fold::scan_match_leaf(&lane(&r), &lane(&r), i as u64, &lane(&r)));
+            black_box(enc);
+            let key: [u8; 16] = r[..16].try_into().unwrap();
+            let pk: [u8; 32] = r[16..48].try_into().unwrap();
+            let c = [0u8; vole::params::OUT_COMMITMENT_BYTES];
+            black_box(vole::commit_check(&key, &pk, i as u64, black_box(&c)));
         });
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         let per_thread: Vec<f64> = std::thread::scope(|s| {

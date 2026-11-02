@@ -175,65 +175,6 @@ pub fn pi_dest(i: usize) -> usize {
     y + 5 * ((2 * x + 3 * y) % 5)
 }
 
-pub struct KTrace {
-    pub block: [u64; RATE_LANES],
-    pub states: Vec<[u64; 25]>,
-    pub digest: [u8; 64],
-}
-
-pub fn sha3_512_trace(msg: &[u8]) -> KTrace {
-    assert!(msg.len() < 72);
-    let mut pad = [0u8; 72];
-    pad[..msg.len()].copy_from_slice(msg);
-    pad[msg.len()] ^= 0x06;
-    pad[71] ^= 0x80;
-    let mut block = [0u64; RATE_LANES];
-    let mut a = [0u64; 25];
-    for i in 0..RATE_LANES {
-        block[i] = u64::from_le_bytes(pad[i * 8..i * 8 + 8].try_into().unwrap());
-        a[i] ^= block[i];
-    }
-    let mut states = vec![a];
-    for rc in RC {
-        let mut c = [0u64; 5];
-        for x in 0..5 {
-            c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20];
-        }
-        for x in 0..5 {
-            let d = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
-            for y in 0..5 {
-                a[x + 5 * y] ^= d;
-            }
-        }
-        states.push(a);
-        for i in 0..25 {
-            a[i] = a[i].rotate_left(RHO[i]);
-        }
-        states.push(a);
-        let mut b = [0u64; 25];
-        for i in 0..25 {
-            b[pi_dest(i)] = a[i];
-        }
-        a = b;
-        states.push(a);
-        let mut n = [0u64; 25];
-        for y in 0..5 {
-            for x in 0..5 {
-                n[x + 5 * y] = a[x + 5 * y] ^ (!a[(x + 1) % 5 + 5 * y] & a[(x + 2) % 5 + 5 * y]);
-            }
-        }
-        a = n;
-        states.push(a);
-        a[0] ^= rc;
-        states.push(a);
-    }
-    let mut digest = [0u8; 64];
-    for i in 0..8 {
-        digest[i * 8..i * 8 + 8].copy_from_slice(&a[i].to_le_bytes());
-    }
-    KTrace { block, states, digest }
-}
-
 pub fn mining_input(nonce: u64) -> Vec<u8> {
     let mut v = b"blocknet faraday bench2 header".to_vec();
     v.extend_from_slice(&nonce.to_le_bytes());
@@ -260,15 +201,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sha3_512_known_answers() {
-        assert_eq!(
-            hex_bytes(&sha3_512_trace(b"").digest),
-            "a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26"
-        );
-        assert_eq!(
-            hex_bytes(&sha3_512_trace(b"abc").digest),
-            "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0"
-        );
-    }
 }

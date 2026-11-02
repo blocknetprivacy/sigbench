@@ -8,8 +8,6 @@ mod cuda;
 #[cfg(target_os = "macos")]
 mod metal;
 
-pub const SHARES_RAM: bool = cfg!(target_os = "macos");
-
 #[derive(Clone, Debug)]
 pub struct Device {
     pub index: usize,
@@ -40,8 +38,5 @@ pub fn mine(dev: &Device, pow: Pow, seconds: f64, stop: &AtomicBool, progress: &
 }
 
 pub(crate) fn reference(pow: Pow, header: &[u8], nonce: u64) -> Vec<u8> {
-    match pow {
-        Pow::Argon2(mib) => crate::mining::pow_hash(mib * 1024, header, nonce).map(|h| h.to_vec()).unwrap_or_default(),
-        fast => crate::mining::fast_hash(fast, header, nonce).to_vec(),
-    }
+    crate::mining::fast_hash(pow, header, nonce).to_vec()
 }

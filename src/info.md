@@ -1,4 +1,4 @@
-# Blocknet Faraday fork Bench 2
+# Blocknet Faraday fork Bench 3
 
 Here is a simple explanation of what you're seeing and how it relates to the work that is
 being done in the background. In the bench, press I to see this text for the current section,
@@ -11,30 +11,22 @@ Today's Blocknet hides the real signer among 16 public keys: a ring of 16.
 To sign, the signer must close the ring. Each step links one key to the next, and the last step
 links back to the first. The comet is that loop. Each lap is one signature.
 
-The bench times this signature so you can compare it with Faraday.
+The bench times this signature so you can compare it with the new spend proof.
 
-## Faraday spend
+## zk-VOLEitH spend
 
-A Faraday spend is one post-quantum zk-STARK. It proves that you own a coin and can spend it. It
-shows nothing about which coin.
+A spend is one post-quantum zero-knowledge proof. It proves that you own the coins you spend,
+that each coin is in the set, that the nullifiers are correct, and that the amounts balance.
+It shows nothing about which coins, how much, or who owns them.
 
-Your coin hides among every Faraday output on the chain, not among 16. That is the goal of
-Monero's FCMP++ (full-chain membership proofs). FCMP++ uses elliptic curves, which a quantum
-computer can break. Faraday uses only hashes and lattices. Old Blocknet coins join the Faraday set
-when they migrate.
+It is not a STARK. It is VOLE-in-the-Head, the method of the FAEST signature. It uses only AES
+and hashes. There is no trusted setup and no fold: each transaction carries its own proof.
 
-The lattice: the ML-KEM key exchange in each output is safe because, in a large lattice, finding
-a short vector is too hard, even for a quantum computer. The short arrows are such vectors.
+The tree: the prover grows 11 trees of random values from seeds. The verifier gets every leaf
+but one in each tree. The hidden leaves mask the secret values, so the proof checks every AES
+round and every sum without seeing them.
 
-## Argon2id 2 GiB and Argon2d 512 MiB
-
-Argon2 is proof of work that needs memory. It fills a large memory area block by block. Each new
-block mixes in an older block, and the data picks which one (the arcs).
-
-So a miner must keep the whole area in memory. A chip with little memory cannot take a shortcut.
-
-- 2 GiB (teal, 16 x 16): Blocknet's PoW today.
-- 512 MiB (amber, 8 x 8): PoW candidate A for the fork.
+The bench runs 4 shapes: 2, 4, 8 and 16 inputs, each with the same number of outputs.
 
 ## BLAKE2b-512
 
@@ -45,33 +37,18 @@ and rotate. 12 rounds of 8 G calls make one hash.
   bits that flip.
 - In the columns: the 4 words of each G rise, and message words drop in from above.
 
-PoW candidate B. It needs no memory per hash.
+The Faraday proof of work, personalization blocknet/pow/v1. It needs no memory per hash.
 
-## SHA3-512
+## Anonymity set
 
-SHA3 (Keccak) keeps a 5 x 5 x 64 cube of bits. Each round has five steps:
+Your coin hides among 2^20 = 1,048,576 coins, not among 16. Today that is every coin on the
+chain. Each coin is a hidden commitment to its owner key and amount (80 bytes).
 
-- θ theta: each column mixes with its neighbors. A light sweeps across.
-- ρ rho: each lane turns by its own amount. The bits spiral up.
-- π pi: the lanes move to new places. The columns slide.
-- χ chi: each row mixes in a nonlinear way. The rows flash.
-- ι iota: a round constant goes into one lane. That lane flashes gold.
+The proof picks the coin with two short selectors of 45 bits, one for each axis of the grid.
+They cross at one coin. The verifier adds up the whole set with the selectors still hidden, so it
+learns that some coin was opened, but not which one.
 
-The violet lanes are the rate: input goes in and output comes out there. The blue lanes are the
-capacity, which never leaves the hash. 24 rounds make one hash.
-
-PoW candidate C. It needs no memory per hash.
-
-## Block fold
-
-This is FRI (Fast Reed-Solomon Interactive Oracle Proof of Proximity). FRI makes every STARK
-proof small. Each fold merges 4 values into 1, so the data shrinks fast. Then the verifier checks
-random paths through every layer: the gold paths. A real proof checks 106.
-
-The block fold checks two spend proofs inside one new proof of the same size, about 770 KB.
-Folds can fold again, so a whole block of spends becomes one proof.
-
-This step needs about 11 GB of RAM. It is skipped on machines with less than 16 GB.
+The ML-KEM-768 note in each output is lattice-based. It lets the receiver find the coin.
 
 ## Report
 

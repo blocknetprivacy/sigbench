@@ -1,0 +1,23 @@
+Shorter-VOLEitH-Signatures
+
+This repository is derived from:
+https://github.com/faest-sign/faest-arch-opt
+
+Original code:
+Copyright (c) 2023 FAEST Team
+Licensed under the MIT License.
+
+The original MIT license text is preserved unchanged in the LICENSE file.
+Nothing in this NOTICE modifies the terms of that license.
+
+Modifications and newly added files in this repository:
+Copyright (c) 2026 Boyuan Gao, Zongyang Zhang, Weihan Li, Jianwei Liu, and Jianting Ning
+Licensed under the MIT License.
+
+The MIT license text in the LICENSE file, together with the copyright notices
+listed above, applies to both the original code and the modifications and newly
+added files described in this NOTICE. Third-party components under
+subprojects/ keep their own licenses.
+
+src/tx and test/tx: fastpq private transaction proof built on this code.
+src/tx/aes_zk.inc is ported from faest-sign/faest-arch-opt (MIT, copyright the FAEST Team).

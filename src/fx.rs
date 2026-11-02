@@ -162,189 +162,142 @@ pub fn lane_column(cv: &mut Canvas, sx: f32, sy: f32, tw: f32, th: f32, h: f32, 
     }
 }
 
-pub fn keccak_cube(w: usize, rows: usize, t: f32, segs: &'static [(usize, f32)]) -> Grid {
-    let clock = Clock { segs };
-    let tk = clock.at(t);
-    let tr = sha3_512_trace(&mining_input(tk.hash));
+pub fn vole_tree(w: usize, rows: usize, t: f32) -> Grid {
     let ph = rows * 2;
     let (fw, fh) = (w as f32, ph as f32);
-    let mut cv = backdrop(w, ph, hex(0x3a1a6b));
-    let done = tk.step >= 120.0;
-    let si = (tk.step as usize).min(119);
-    let frac = if done { 1.0 } else { tk.step.fract() };
-    let step = KSTEPS[si % 5];
-    let (prev, next) = if done { (tr.states[120], tr.states[120]) } else { (tr.states[si], tr.states[si + 1]) };
-    let h = fh * 0.42;
-    let tw = (fw * 0.062).min((fh * 0.88 - h) / (5.0 * 1.25));
-    let th = tw * 0.5;
-    let sp = 1.25;
-    let ox = fw * 0.5;
-    let oy = fh * 0.93 - 2.0 * 4.0 * th * sp - th;
-    let pos = |i: usize| -> (f32, f32) {
-        let (x, y) = ((i % 5) as f32, (i / 5) as f32);
-        (ox + (x - y) * tw * sp, oy + (x + y) * th * sp)
-    };
-    let (rate_on, cap_on) = (hex(0xc58bff), hex(0x4f6bff));
-    let e = ease(frac);
-    let mut cols: Vec<(f32, f32, usize)> = (0..25)
-        .map(|i| {
-            if step == KStep::Pi && !done {
-                let (a, b) = (pos(i), pos(pi_dest(i)));
-                (a.0 + (b.0 - a.0) * e, a.1 + (b.1 - a.1) * e, i)
-            } else {
-                let p = pos(i);
-                (p.0, p.1, i)
-            }
-        })
-        .collect();
-    cols.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    for (sx, sy, i) in cols {
-        let (x, y) = (i % 5, i / 5);
-        let (word, shift, flash) = match step {
-            _ if done => (next[i], 0.0, 0),
-            KStep::Rho => (prev[i], frac * RHO[i] as f32, 0),
-            KStep::Pi => (prev[i], 0.0, 0),
-            _ => (next[i], 0.0, prev[i] ^ next[i]),
-        };
-        let fk = (1.0 - frac).powi(2);
-        let on = if i < RATE_LANES { rate_on } else { cap_on };
-        let mut top = on.scale(0.55);
-        if !done {
-            match step {
-                KStep::Theta if x == (frac * 5.0) as usize => top = top.add(hex(WHITE).scale(0.5)),
-                KStep::Chi if y == (frac * 5.0) as usize => top = top.add(hex(WHITE).scale(0.5)),
-                KStep::Iota if i == 0 => top = hex(0xffd36b).scale(1.0 + fk),
-                _ => {}
-            }
-        } else if i < 8 {
-            top = hex(0xffd36b);
+    let mut cv = backdrop(w, ph, hex(0x1b2f6b));
+    const DEPTH: usize = 5;
+    const PERIOD: f32 = 9.0;
+    let cycle = (t / PERIOD) as u64;
+    let lt = t % PERIOD;
+    let hidden = (mix64(cycle + 7) % (1 << DEPTH)) as usize;
+    let top = fh * 0.22;
+    let bottom = fh * 0.86;
+    let ly = |l: usize| top + (bottom - top) * l as f32 / DEPTH as f32;
+    let lx = |l: usize, j: usize| fw * 0.08 + (fw * 0.84) * (j as f32 + 0.5) / (1usize << l) as f32;
+    let seed = hex(0x7cf7d4);
+    let leaf = hex(0x9fb4ff);
+    let gold = hex(0xffd36b);
+    let grow = (lt / 3.0).clamp(0.0, 1.0) * DEPTH as f32;
+    let pick = ((lt - 3.6) / 1.4).clamp(0.0, 1.0);
+    let open = ((lt - 5.2) / 1.0).clamp(0.0, 1.0);
+    let on_path = |l: usize, j: usize| j == hidden >> (DEPTH - l);
+    for l in 0..DEPTH {
+        let p = (grow - l as f32).clamp(0.0, 1.0);
+        if p <= 0.0 {
+            break;
         }
-        lane_column(&mut cv, sx, sy, tw * 0.86, th * 0.86, h, word, shift, flash, fk, on, top);
+        for j in 0..(1usize << l) {
+            let a = (lx(l, j), ly(l));
+            for c in 0..2 {
+                let k = 2 * j + c;
+                let b = (lx(l + 1, k), ly(l + 1));
+                let e = ease(p);
+                let tip = (a.0 + (b.0 - a.0) * e, a.1 + (b.1 - a.1) * e);
+                let path = pick > 0.0 && on_path(l + 1, k) && on_path(l, j);
+                let col = if path { gold.scale(0.25 + 0.6 * pick) } else { seed.scale(0.28) };
+                cv.line(a, tip, col);
+            }
+        }
     }
-    if done {
-        for i in 0..8 {
-            let p = pos(i);
-            beam(&mut cv, (p.0, p.1 - h - th), (p.0, 0.0), 0.6, hex(0xffd36b).scale(0.18));
+    for l in 0..=DEPTH {
+        if (l as f32) > grow + 0.01 {
+            break;
         }
+        for j in 0..(1usize << l) {
+            let (x, y) = (lx(l, j), ly(l));
+            let sibling_of_path = l > 0 && !on_path(l, j) && on_path(l - 1, j >> 1);
+            let col = if l == DEPTH && j == hidden && pick > 0.5 {
+                hex(0x2a2f45)
+            } else if open > 0.0 && sibling_of_path {
+                gold.scale(0.5 + 0.5 * open)
+            } else if l == DEPTH {
+                leaf.scale(0.7)
+            } else {
+                seed.scale(0.8)
+            };
+            let r = if l == 0 { 2.2 } else if l == DEPTH { 1.1 } else { 1.4 };
+            cv.glow(x, y, r, col);
+        }
+    }
+    if pick > 0.5 {
+        let (x, y) = (lx(DEPTH, hidden), ly(DEPTH));
+        cv.glow(x, y, 2.0 + 0.6 * (t * 5.0).sin().abs(), hex(0xff5fa2).scale(0.5));
     }
     let mut g = Grid::from_canvas(&cv, rows);
-    let info = if done {
-        "squeeze: lanes 0-7 are the 512-bit digest".to_string()
+    centered(&mut g, 2, "VOLE commitment: one seed grows a tree of random values", hex(INK));
+    let sub = if open > 0.0 {
+        "the verifier gets every leaf but one  ·  11 trees  ·  the hidden leaves keep the spend secret"
+    } else if pick > 0.0 {
+        "a hash of the commitment picks one leaf to keep hidden"
     } else {
-        format!("round {:>2}/24  ·  {}", si / 5 + 1, step.name())
+        "each leaf masks one copy of the witness: keys, amounts, which coin"
     };
-    centered(&mut g, 2, &info, hex(INK));
-    centered(&mut g, 3, &format!("5 x 5 lanes x 64 bits  ·  nonce {}  ·  {}", tk.hash, slowmo(tk.dur, 355.0)), hex(DIM));
-    g.text(2, rows.saturating_sub(4), "■ rate (9 lanes)", rate_on);
-    g.text(2, rows.saturating_sub(3), "■ capacity (16 lanes)", cap_on);
+    centered(&mut g, 3, sub, hex(DIM));
+    let y = ((ly(DEPTH) / 2.0) as usize + 2).min(rows.saturating_sub(2));
+    if open > 0.0 {
+        centered(&mut g, y, "then QuickSilver checks every AES round and every sum on the masked values", hex(DIM));
+    }
     g
 }
 
-pub fn fri_fold(w: usize, rows: usize, t: f32) -> Grid {
+pub fn set_select(w: usize, rows: usize, t: f32) -> Grid {
     let ph = rows * 2;
     let (fw, fh) = (w as f32, ph as f32);
-    let mut cv = backdrop(w, ph, hex(0x103a40));
-    const N: [usize; 5] = [256, 64, 16, 4, 1];
-    let mut layers: Vec<Vec<f32>> = vec![(0..256)
-        .map(|i| {
-            let th = i as f32 / 256.0 * std::f32::consts::TAU;
-            (0.55 * (th + 0.3).sin() + 0.3 * (3.0 * th + 1.1).sin() + 0.18 * (7.0 * th + 2.0).sin() + 0.1 * (13.0 * th).sin()) * 0.9
-        })
-        .collect()];
-    for l in 0..4 {
-        let (p, n) = (&layers[l], N[l + 1]);
-        let beta = [0.7, -0.5, 0.9, -0.6][l];
-        let child: Vec<f32> = (0..n)
-            .map(|j| {
-                let q: Vec<f32> = (0..4).map(|r| p[j + r * n]).collect();
-                ((q[0] + q[1] + q[2] + q[3]) * 0.25 + beta * (q[0] - q[2]) * 0.5 + 0.5 * beta * (q[1] - q[3]) * 0.5).clamp(-1.0, 1.0)
-            })
-            .collect();
-        layers.push(child);
-    }
-    let mx = fw * 0.08;
-    let ww = fw - 2.0 * mx;
-    let ly = |l: usize| fh * 0.17 + l as f32 * fh * 0.165;
-    let amp = fh * 0.05;
-    let px = |l: usize, j: usize| mx + (j as f32 + 0.5) / N[l] as f32 * ww;
-    let pt = |l: usize, j: usize| (px(l, j), ly(l) - layers[l][j] * amp);
-    let color = |l: usize, v: f32| hex(0x2ef2c3).lerp(hex(0xffc857), l as f32 / 4.0).scale(0.7 + 0.3 * v.abs());
-    let reveal0 = (t / 1.0).clamp(0.0, 1.0);
-    for j in 0..256 {
-        if (j as f32) / 256.0 > reveal0 {
-            break;
-        }
-        let (x, y) = pt(0, j);
-        if j > 0 {
-            cv.line(pt(0, j - 1), (x, y), color(0, layers[0][j]).scale(0.6));
-        }
-        cv.glow(x, y, 0.7, color(0, layers[0][j]).scale(0.7));
-    }
-    for l in 1..5 {
-        let start = 1.0 + (l - 1) as f32 * 1.35;
-        let lp = ((t - start) / 1.35).clamp(0.0, 1.0);
-        if lp <= 0.0 {
-            continue;
-        }
-        let n = N[l];
-        for j in 0..n {
-            let child = pt(l, j);
-            for r in 0..4 {
-                let parent = pt(l - 1, j + r * n);
-                let delay = (j as f32 / n as f32) * 0.35 + r as f32 * 0.05;
-                let p = ((lp - delay) / 0.55).clamp(0.0, 1.0);
-                let a = 0.10 + 0.25 / (n as f32).sqrt();
-                if p > 0.0 {
-                    let e = ease(p);
-                    let tip = (parent.0 + (child.0 - parent.0) * e, parent.1 + (child.1 - parent.1) * e);
-                    cv.line(parent, tip, color(l, 0.5).scale(a));
-                    if p < 1.0 {
-                        cv.glow(tip.0, tip.1, 0.8, color(l, 1.0).scale(0.8));
-                    }
-                }
+    let mut cv = backdrop(w, ph, hex(0x0f4a3a));
+    const PERIOD: f32 = 8.0;
+    let cycle = (t / PERIOD) as u64;
+    let lt = t % PERIOD;
+    let (x0, x1) = (fw * 0.12, fw * 0.88);
+    let (y0, y1) = (fh * 0.24, fh * 0.86);
+    let cols = ((x1 - x0) / 3.0) as usize;
+    let rws = ((y1 - y0) / 3.0) as usize;
+    let tc = (mix64(cycle * 2 + 1) % cols.max(1) as u64) as usize;
+    let tr = (mix64(cycle * 2 + 2) % rws.max(1) as u64) as usize;
+    let cell = |c: usize, r: usize| (x0 + c as f32 * 3.0 + 1.5, y0 + r as f32 * 3.0 + 1.5);
+    let base = hex(0x2ef2c3);
+    let reveal = (lt / 1.2).clamp(0.0, 1.0);
+    for r in 0..rws {
+        for c in 0..cols {
+            if (noise(c, r * 7 + 3) * 0.5 + (r as f32 / rws as f32) * 0.5) > reveal {
+                continue;
             }
-            let grown = ((lp - (j as f32 / n as f32) * 0.35 - 0.55) / 0.1).clamp(0.0, 1.0);
-            if grown > 0.0 {
-                let (x, y) = child;
-                cv.line((x, ly(l)), (x, y), color(l, 0.6).scale(0.4 * grown));
-                cv.glow(x, y, 0.9 + l as f32 * 0.5, color(l, layers[l][j]).scale(grown));
-            }
+            let (x, y) = cell(c, r);
+            let b = 0.10 + 0.10 * noise(c * 3 + cycle as usize, r);
+            cv.add(x as i32, y as i32, base.scale(b));
         }
     }
-    let qt = ((t - 6.6) / 2.2).clamp(0.0, 1.0);
-    let queries = [37usize, 101, 166, 203, 250];
-    if qt > 0.0 {
-        let gold = hex(0xffe08a);
-        for (qi, &q) in queries.iter().enumerate() {
-            let depth = qt * 4.0 - qi as f32 * 0.12;
-            for l in 0..4 {
-                let p = (depth - l as f32).clamp(0.0, 1.0);
-                if p <= 0.0 {
-                    break;
-                }
-                let n = N[l + 1];
-                let j = q % n;
-                for r in 0..4 {
-                    let sib = pt(l, j + r * n);
-                    cv.glow(sib.0, sib.1, 1.3, gold.scale(0.7 * p));
-                }
-                let a = pt(l, q % N[l]);
-                let b = pt(l + 1, j);
-                let e = ease(p);
-                beam(&mut cv, a, (a.0 + (b.0 - a.0) * e, a.1 + (b.1 - a.1) * e), 0.5, gold.scale(0.5));
-            }
+    let lock = ((lt - 1.4) / 2.6).clamp(0.0, 1.0);
+    let e = ease(lock);
+    let row_y = cell(0, tr).1 * e + y0 * (1.0 - e) + (1.0 - e) * (y1 - y0) * 0.5 * (1.0 + (lt * 2.3).sin());
+    let col_x = cell(tc, 0).0 * e + x0 * (1.0 - e) + (1.0 - e) * (x1 - x0) * 0.5 * (1.0 + (lt * 1.7).cos());
+    if lt > 1.2 {
+        let band = hex(0xc58bff).scale(0.22);
+        let band2 = hex(0xffb347).scale(0.22);
+        cv.line((x0, row_y), (x1, row_y), band);
+        cv.line((col_x, y0), (col_x, y1), band2);
+    }
+    let hit = ((lt - 4.2) / 0.8).clamp(0.0, 1.0);
+    if hit > 0.0 {
+        let (x, y) = cell(tc, tr);
+        cv.glow(x, y, 1.5 + 1.5 * hit + 0.4 * (t * 6.0).sin().abs(), hex(0xffe08a).scale(0.8 * hit));
+    }
+    let fade = ((lt - 6.4) / 1.2).clamp(0.0, 1.0);
+    if fade > 0.0 {
+        for px in cv.px.iter_mut() {
+            *px = px.scale(1.0 - 0.6 * fade);
         }
     }
     let mut g = Grid::from_canvas(&cv, rows);
-    centered(&mut g, 2, "FRI: each fold merges 4 points into 1", hex(INK));
-    let sub = if qt > 0.0 { "106 queries check the folds (5 shown)" } else { "this is how every proof shrinks to a few hundred KB" };
+    centered(&mut g, 2, "the anonymity set: 2^20 = 1,048,576 coins", hex(INK));
+    let sub = if hit > 0.0 {
+        "the proof shows a coin in the set was opened  ·  never which one"
+    } else if lt > 1.2 {
+        "two 45-bit selectors, one per axis, cross at the coin you spend"
+    } else {
+        "every coin is a hidden commitment to its owner and amount"
+    };
     centered(&mut g, 3, sub, hex(DIM));
-    for (l, n) in N.iter().enumerate() {
-        let y = ((ly(l)) / 2.0) as usize;
-        if l == 0 || t > 1.0 + (l - 1) as f32 * 1.35 {
-            g.text(1, y, &format!("{n:>3}"), hex(DIM));
-        }
-    }
     g
 }
 
@@ -658,4 +611,20 @@ pub fn blake_iso(w: usize, rows: usize, t: f32, segs: &'static [(usize, f32)]) -
     let mut g = Grid::from_canvas(&cv, rows);
     b2_header(&mut g, &tr, i, &tk);
     g
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn new_scenes_draw_at_every_phase() {
+        for (w, rows) in [(80usize, 24usize), (200, 60), (40, 12)] {
+            let mut t = 0.0f32;
+            while t < 40.0 {
+                let a = super::vole_tree(w, rows, t);
+                let b = super::set_select(w, rows, t);
+                assert_eq!((a.w, b.w), (w, w));
+                t += 0.37;
+            }
+        }
+    }
 }

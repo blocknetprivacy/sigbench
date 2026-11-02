@@ -79,7 +79,7 @@ pub fn boot(w: usize, rows: usize, t: f32, lat: &mut LatticeState, info: &[(Stri
         g.text(cx(kicker), (y0 / 2).saturating_sub(2), &shown, hex(DIM));
     }
     let below = (y0 + th) / 2 + 2;
-    let sub = "BENCH 2  ·  today's Blocknet vs. the Faraday fork, on this machine";
+    let sub = "BENCH 3  ·  today's Blocknet vs. the post-quantum spend proof, on this machine";
     if t > 2.0 {
         let shown: String = sub.chars().take(((t - 2.0) * 40.0) as usize).collect();
         g.text(cx(sub), below, &shown, hex(INK));
@@ -273,94 +273,6 @@ pub fn column(cv: &mut Canvas, sx: f32, sy: f32, tw: f32, th: f32, h: f32, top: 
     }
 }
 
-pub fn memory(w: usize, rows: usize, t: f32, n: usize, per_hash: f32, base: Rgb, hot: Rgb) -> Grid {
-    let ph = rows * 2;
-    let (fw, fh) = (w as f32, ph as f32);
-    let mut cv = Canvas::new(w, ph, Rgb::default());
-    for y in 0..ph {
-        for x in 0..w {
-            let r = (((x as f32 - fw * 0.5) / fw).powi(2) + ((y as f32 - fh * 0.6) / fh).powi(2)).sqrt();
-            cv.px[y * w + x] = base.scale(0.09).lerp(hex(0x020306), r * 2.0);
-        }
-    }
-    let tw = (fw * 0.84 / (2.0 * n as f32)).min(fh * 0.6 / n as f32);
-    let th = tw * 0.5;
-    let max_h = fh * 0.3;
-    let ox = fw * 0.5;
-    let oy = (fh - n as f32 * tw - max_h) * 0.5 + max_h + th;
-    let total = n * n;
-    let hash = (t / per_hash) as u64;
-    let k = (t / per_hash).fract() * total as f32;
-    let kk = (k as usize).min(total - 1);
-    let since = (t / per_hash).fract() * per_hash;
-    let sink = 1.0 - ease(since / 0.35);
-    let tall = |hsh: u64, j: usize| max_h * (0.15 + 0.85 * (mix64(hsh * 7_777 + j as u64) >> 40) as f32 / (1u64 << 24) as f32);
-    let center = |j: usize| -> (f32, f32) {
-        let (i, r) = ((j % n) as f32, (j / n) as f32);
-        (ox + (i - r) * tw, oy + (i + r) * th)
-    };
-    let mut boost = vec![0.0f32; total];
-    let mut arcs = Vec::new();
-    for back in 0..6usize {
-        if kk < back + 1 {
-            break;
-        }
-        let j = kk - back;
-        let r = (mix64(hash * 1_000_003 + j as u64) % j as u64) as usize;
-        let fade = (1.0 - back as f32 / 6.0).powi(2);
-        boost[r] = boost[r].max(fade);
-        arcs.push((j, r, fade));
-    }
-    let mut height = vec![0.0f32; total];
-    let mut color = vec![Rgb::default(); total];
-    for j in 0..total {
-        if (j as f32) < k {
-            let age = k - j as f32;
-            height[j] = tall(hash, j) * ease(age / (total as f32 * 0.03).max(2.0));
-            let heat = (-age / (total as f32 * 0.06)).exp();
-            color[j] = base.lerp(hot, heat * 0.85 + boost[j] * 0.7).add(hex(0xffffff).scale(boost[j] * 0.35));
-        } else if hash > 0 && sink > 0.0 {
-            height[j] = tall(hash - 1, j) * sink;
-            color[j] = base.scale(0.6).add(hot.scale(0.4 * (1.0 - sink)));
-        } else {
-            color[j] = base.scale(0.13);
-        }
-    }
-    let mut order: Vec<usize> = (0..total).collect();
-    order.sort_by_key(|&j| j % n + j / n);
-    for j in order {
-        let (sx, sy) = center(j);
-        column(&mut cv, sx, sy, tw * 0.86, th * 0.86, height[j], color[j]);
-    }
-    for (j, r, fade) in arcs {
-        let (a, b) = (center(j), center(r));
-        let (a, b) = ((a.0, a.1 - height[j]), (b.0, b.1 - height[r]));
-        let lift = (a.0 - b.0).abs() * 0.25 + (a.1 - b.1).abs() * 0.3 + fh * 0.08;
-        let mid = ((a.0 + b.0) * 0.5, a.1.min(b.1) - lift);
-        let mut prev = a;
-        for s in 1..=80 {
-            let u = s as f32 / 80.0;
-            let p = (
-                (1.0 - u).powi(2) * a.0 + 2.0 * (1.0 - u) * u * mid.0 + u * u * b.0,
-                (1.0 - u).powi(2) * a.1 + 2.0 * (1.0 - u) * u * mid.1 + u * u * b.1,
-            );
-            cv.line(prev, p, hot.scale(0.55 * fade));
-            prev = p;
-        }
-        cv.glow(b.0, b.1, 1.5 + tw * 0.3, hot.scale(0.8 * fade));
-    }
-    let (hx, hy) = center(kk);
-    let top = hy - height[kk];
-    for y in 0..top.max(0.0) as i32 {
-        let f = (y as f32 / top.max(1.0)).powi(2);
-        cv.add(hx as i32, y, hot.scale(0.7 * f));
-        cv.add(hx as i32 - 1, y, hot.scale(0.2 * f));
-        cv.add(hx as i32 + 1, y, hot.scale(0.2 * f));
-    }
-    cv.glow(hx, top, 1.5 + tw * 0.4, hex(0xffffff).scale(0.9));
-    Grid::from_canvas(&cv, rows)
-}
-
 pub struct Report {
     pub stamp: String,
     pub sections: Vec<(&'static str, Vec<(&'static str, String)>)>,
@@ -371,7 +283,7 @@ pub struct Report {
 
 pub fn save_report(sections: Vec<(&'static str, Vec<(&'static str, String)>)>, note: &str, left: usize) -> Report {
     let stamp = cmd("date", &["+%Y-%m-%d %H:%M"]).unwrap_or_default();
-    let mut txt = format!("Blocknet Faraday Bench 2 results\n{stamp}\n");
+    let mut txt = format!("Blocknet Bench 3 results\n{stamp}\n");
     if !note.is_empty() {
         txt.push_str(note);
         txt.push('\n');
@@ -384,7 +296,7 @@ pub fn save_report(sections: Vec<(&'static str, Vec<(&'static str, String)>)>, n
         }
     }
     let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| ".".into());
-    let file = format!("blocknet-bench2-{}.txt", stamp.replace([' ', ':'], "-"));
+    let file = format!("blocknet-bench3-{}.txt", stamp.replace([' ', ':'], "-"));
     let path = dir.join(file);
     let saved = match std::fs::write(&path, &txt) {
         Ok(()) => format!("Saved to {}", path.display()),
@@ -427,7 +339,7 @@ pub fn report_card(g: &mut Grid, rep: &Report, intro: f32) {
     let cy = (1 + h.saturating_sub(ch + 3) / 2 + ((1.0 - ease(intro)) * 3.0) as usize).max(1);
     g.panel(cx, cy, cw, ch, hex(0x3a4766), "", ink);
     let fit = |s: &str, n: usize| s.chars().take(n).collect::<String>();
-    let title = "BENCH 2 RESULTS";
+    let title = "BENCH 3 RESULTS";
     g.text(cx + cw.saturating_sub(title.len()) / 2, cy + 1, title, ink);
     g.text(cx + cw.saturating_sub(rep.stamp.len()) / 2, cy + 2, &rep.stamp, dim);
     let mut x = cx + 3;
@@ -513,21 +425,15 @@ pub const TWEEN: f32 = 1.2;
 pub enum Scene {
     Boot,
     Ring,
-    Lattice,
-    Argon2id,
-    Argon2d,
+    Spend,
     Blake2b,
-    Sha3,
-    Fold,
+    Select,
     Report,
 }
 
 pub struct SceneCtx {
     pub lat: LatticeState,
     pub info: Vec<(String, String)>,
-    pub argon_id_secs: f32,
-    pub argon_d_secs: f32,
-    pub fold_period: f32,
 }
 
 impl SceneCtx {
@@ -535,9 +441,6 @@ impl SceneCtx {
         SceneCtx {
             lat: LatticeState { vecs: Vec::new(), rng: Rand(0x9e37_79b9_7f4a_7c15), clock: 0.0 },
             info,
-            argon_id_secs: 1.2,
-            argon_d_secs: 0.3,
-            fold_period: 14.0,
         }
     }
 }
@@ -546,14 +449,7 @@ pub fn scene_grid(s: Scene, w: usize, rows: usize, t: f32, cx: &mut SceneCtx) ->
     match s {
         Scene::Boot => boot(w, rows, t, &mut cx.lat, &cx.info),
         Scene::Ring => ring(w, rows, t),
-        Scene::Lattice => {
-            let mut g = lattice(w, rows, t, &mut cx.lat);
-            let size = (rows as f32 * 2.0 * 0.3).min(w as f32 * 0.2);
-            draw_logo(&mut g, w as f32 * 0.5, rows as f32, size, 1.0, 0.8 + 0.2 * (t * 1.7).sin());
-            g
-        }
-        Scene::Argon2id => memory(w, rows, t, 16, cx.argon_id_secs.max(0.05), hex(0x0f5f7a), hex(0xaef4ff)),
-        Scene::Argon2d => memory(w, rows, t, 8, cx.argon_d_secs.max(0.05), hex(0x7a3a0c), hex(0xffd9a0)),
+        Scene::Spend => fx::vole_tree(w, rows, t),
         Scene::Blake2b => {
             const SEGS: &[(usize, f32)] = &[(12, 2.2), (1140, 0.9)];
             if t < 2.2 {
@@ -564,10 +460,9 @@ pub fn scene_grid(s: Scene, w: usize, rows: usize, t: f32, cx: &mut SceneCtx) ->
                 fx::blake_iso(w, rows, t, SEGS)
             }
         }
-        Scene::Sha3 => fx::keccak_cube(w, rows, t, &[(5, 2.4), (115, 0.8)]),
-        Scene::Fold => fx::fri_fold(w, rows, (t % cx.fold_period) * 10.0 / cx.fold_period),
+        Scene::Select => fx::set_select(w, rows, t),
         Scene::Report => {
-            let mut g = fx::fri_fold(w, rows, 10.0);
+            let mut g = fx::set_select(w, rows, 5.0);
             g.scale(0.3);
             g
         }
@@ -614,7 +509,7 @@ pub fn interface(g: &mut Grid, hud: &Hud, frame: u64) {
             }
         }
     }
-    g.text(2, 0, "◆ BLOCKNET FARADAY  ·  BENCH 2", accent);
+    g.text(2, 0, "◆ BLOCKNET  ·  BENCH 3", accent);
     if w > hud.right.chars().count() + 36 {
         g.text(w - hud.right.chars().count() - 2, 0, &hud.right, dim);
     }
@@ -697,9 +592,9 @@ pub fn start_info(m: &crate::machine::Machine) -> Vec<(String, String)> {
     vec![
         pair("cpu", format!("{}  ·  {} threads  ·  {} RAM", m.cpu, m.threads, m.ram())),
         pair("system", format!("{}  ·  {}  ·  {}", m.os, m.arch, m.simd_short())),
-        pair("spend", "post-quantum zk-STARK  ·  full-chain anonymity set  ·  112-bit security".into()),
-        pair("keys", "post-quantum ML-KEM-768 key exchange  ·  Poseidon2 hashes".into()),
-        pair("block", "~470 transactions per 2 MB block  ·  one folded proof".into()),
+        pair("spend", "post-quantum zk-VOLEitH proof  ·  set of 2^20 coins  ·  128-bit security".into()),
+        pair("keys", "post-quantum ML-KEM-768 notes  ·  AES-128 owner keys and nullifiers".into()),
+        pair("block", "one proof per transaction  ·  no fold  ·  no trusted setup".into()),
     ]
 }
 
@@ -726,7 +621,7 @@ impl Stager {
     pub fn draw(&self, w: usize, h: usize, cx: &mut SceneCtx, visuals: bool, global: f32) -> Grid {
         let mut one = |s: Scene, t: f32| {
             if visuals || s == Scene::Boot {
-                scene_grid(s, w, h, if s == Scene::Lattice { global } else { t }, cx)
+                scene_grid(s, w, h, if s == Scene::Spend { global } else { t }, cx)
             } else {
                 Grid::new(w, h, hex(0x05070d))
             }
@@ -827,11 +722,9 @@ fn info_section(scene: Scene) -> Option<(&'static str, &'static str)> {
     let key = match scene {
         Scene::Boot => return None,
         Scene::Ring => "Legacy RingCT",
-        Scene::Lattice => "Faraday spend",
-        Scene::Argon2id | Scene::Argon2d => "Argon2",
+        Scene::Spend => "zk-VOLEitH spend",
         Scene::Blake2b => "BLAKE2b",
-        Scene::Sha3 => "SHA3",
-        Scene::Fold => "Block fold",
+        Scene::Select => "Anonymity set",
         Scene::Report => "Report",
     };
     INFO.split("\n## ").skip(1).find(|s| s.starts_with(key)).and_then(|s| s.split_once('\n')).map(|(t, b)| (t.trim(), b))

@@ -43,8 +43,8 @@ pub fn masthead(on: bool, host: &str, cores: usize) -> Vec<String> {
         ),
         (String::new(), String::new()),
         (
-            "hash-based STARK · quantum-safe".into(),
-            p(on, FAINT, "hash-based STARK · quantum-safe"),
+            "zk-VOLEitH · AES + hashes · quantum-safe".into(),
+            p(on, FAINT, "zk-VOLEitH · AES + hashes · quantum-safe"),
         ),
         (host_line.clone(), p(on, FAINT, &host_line)),
         (String::new(), String::new()),

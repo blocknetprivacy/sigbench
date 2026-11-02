@@ -156,6 +156,7 @@ impl Side {
 
 pub struct Op {
     pub side: Side,
+    pub shape: usize,
     pub verb: &'static str,
     pub time: Stats,
     pub cpu: Stats,
@@ -194,23 +195,13 @@ pub fn fmt_rate(hr: f64) -> String {
 
 pub struct Report {
     pub sig_bytes: usize,
-    pub proof_bytes: usize,
+    pub proofs: Vec<(usize, usize)>,
     pub ops: Vec<Op>,
     pub leg_mem_mb: Option<Stats>,
     pub new_mem_mb: Option<Stats>,
     pub hashes: Vec<HashRow>,
-    pub faithful: Option<bool>,
-    pub faraday: Option<FaradayReport>,
-}
-
-pub struct FaradayReport {
-    pub tx_meta: usize,
-    pub per_tx_proof: usize,
-    pub tx_relay: usize,
-    pub folded_bytes: usize,
-    pub fold_secs: f64,
-    pub block_n: usize,
-    pub block_bytes: usize,
+    pub wire: Vec<vole::wire::WireRow>,
+    pub set_ms: f64,
 }
 
 pub fn banner(on: bool, host: &str, cores: usize, n_legacy: usize, n_new: usize) {
@@ -224,9 +215,9 @@ pub fn banner(on: bool, host: &str, cores: usize, n_legacy: usize, n_new: usize)
         .d("   RingCT CLSAG ring signature  (ring 16, Ristretto255)");
     let l2 = Seg::new(on)
         .c(CYAN, "new")
-        .d("      Faraday unified spend STARK proof  (Plonky3, KoalaBear^5, 112-bit proven)");
+        .d("      zk-VOLEitH spend proof  (AES + QuickSilver, set of 2^20 coins, 128-bit)");
     let l3 = Seg::new(on).d(&format!(
-        "{n_legacy} legacy (sign+verify) · {n_new} new (prove+verify) · fold 2 spends -> 1"
+        "{n_legacy} legacy (sign+verify) · {n_new} new per shape: 2, 4, 8, 16 in = out"
     ));
     println!("{}", panel(title, vec![l1, l2, Seg::new(on), l3], on));
 }
@@ -240,35 +231,30 @@ pub fn check(on: bool, ok: bool, label: &str) {
     println!("  {mark} {}", fg(GRAY, label, on));
 }
 
-fn faraday_panel(on: bool, r: &Report) {
-    let Some(f) = r.faraday.as_ref() else { return };
+fn wire_panel(on: bool, r: &Report) {
+    if r.wire.is_empty() {
+        return;
+    }
     let title = Seg::new(on)
-        .cb(WHITE, "FARADAY TX / BLOCK")
-        .d("   PQC wire format, offline");
-    let unfolded_mb = f.block_n as f64 * f.per_tx_proof as f64 / (1024.0 * 1024.0);
-    let savings = unfolded_mb * 1024.0 * 1024.0 / (f.folded_bytes.max(1) as f64);
-    let _ = f.block_bytes;
-    let lines = vec![
-        Seg::new(on)
-            .c(CYAN, "fold     ")
-            .c(WHITE, "2 spends -> 1 proof")
-            .d(&format!("  {}, verified, in {:.0}s", size(f.folded_bytes), f.fold_secs)),
-        Seg::new(on),
-        Seg::new(on)
-            .c(CYAN, "tx send  ")
-            .c(WHITE, &size(f.tx_relay))
-            .d(&format!("  relay  ({} metadata + {} proof)", size(f.tx_meta), size(f.per_tx_proof))),
-        Seg::new(on)
-            .c(CYAN, "tx chain ")
-            .c(WHITE, &size(f.tx_meta))
-            .d("  metadata only  (proof stripped + folded away)"),
-        Seg::new(on),
-        Seg::new(on)
-            .c(CYAN, "block    ")
-            .c(WHITE, &format!("{} txs", f.block_n))
-            .d(" fit a 2 MB block")
-            .c(GREEN, &format!("  O(1): saves ~{:.0}x on-chain", savings)),
-    ];
+        .cb(WHITE, "TX / BLOCK")
+        .d("   wire format, offline, 2 MB blocks, no fold");
+    let mut lines = vec![Seg::new(on).d("shape      proof      tx sent    per block   pruned (proof dropped)")];
+    for w in &r.wire {
+        let proof = w.relay - w.metadata - 4;
+        lines.push(
+            Seg::new(on)
+                .c(CYAN, &format!("{:>2} in/out  ", w.n))
+                .c(WHITE, &format!("{:>9}  {:>9}", size(proof), size(w.relay)))
+                .d(&format!("  {:>5} txs   {:>5} txs", w.per_block, w.per_block_pruned)),
+        );
+    }
+    lines.push(Seg::new(on));
+    lines.push(Seg::new(on).d(&format!(
+        "set: {} coins, 80 B each, digest {:.0} ms once per set",
+        2usize.pow(vole::params::SET_LOG2),
+        r.set_ms
+    )));
+    lines.push(Seg::new(on).d("each output carries an ML-KEM-768 note (1,088 B) + 80 B commitment"));
     println!("\n{}", panel(title, lines, on));
 }
 
@@ -284,7 +270,11 @@ pub fn results(on: bool, r: &Report) {
     for op in &r.ops {
         let hue = op.side.hue();
         let g = gauge(op.time.low, op.time.avg, op.time.high, 11, hue, on);
-        let label = format!("{:<6} {:<6}", op.side.tag(), op.verb);
+        let label = if op.shape == 0 {
+            format!("{:<9} {:<6}", op.side.tag(), op.verb)
+        } else {
+            format!("{:<3} {:<5} {:<6}", op.side.tag(), format!("{}x{}", op.shape, op.shape), op.verb)
+        };
         let vals = format!(
             "{:>6} {:>6} {:>6}",
             num(op.time.low),
@@ -305,8 +295,9 @@ pub fn results(on: bool, r: &Report) {
 
     let (leg_sign, new_prove) = (find(r, "sign"), find(r, "prove"));
     let (leg_ver, new_ver) = (find_side(r, &Side::Legacy, "verify"), find_side(r, &Side::New, "verify"));
+    let first_proof = r.proofs.first().map(|p| p.1).unwrap_or(0);
     if leg_sign.is_some() && new_prove.is_some() {
-        let title = Seg::new(on).cb(WHITE, "HEAD TO HEAD").d("   (average, bar scaled within each pair)");
+        let title = Seg::new(on).cb(WHITE, "HEAD TO HEAD").d("   (average; new = whole 2-in/2-out tx)");
         let mut lines = Vec::new();
         let ls = leg_sign.unwrap();
         let np = new_prove.unwrap();
@@ -335,8 +326,8 @@ pub fn results(on: bool, r: &Report) {
             on,
             "size",
             ("legacy sig", AMBER, r.sig_bytes as f64, size(r.sig_bytes)),
-            ("new proof", CYAN, r.proof_bytes as f64, size(r.proof_bytes)),
-            r.proof_bytes as f64 / (r.sig_bytes as f64).max(1.0),
+            ("new proof", CYAN, first_proof as f64, size(first_proof)),
+            first_proof as f64 / (r.sig_bytes as f64).max(1.0),
         );
         println!("\n{}", panel(title, lines, on));
     }
@@ -359,7 +350,7 @@ pub fn results(on: bool, r: &Report) {
         println!("\n{}", panel(title, lines, on));
     }
 
-    faraday_panel(on, r);
+    wire_panel(on, r);
 
     mining_panel(on, r);
 
@@ -367,7 +358,7 @@ pub fn results(on: bool, r: &Report) {
         "\n  {}",
         fg(
             GRAY,
-            "one legacy signature authorizes 1 input; one new proof authorizes a whole",
+            "one legacy signature authorizes 1 input in a ring of 16; one new proof authorizes",
             on
         )
     );
@@ -375,7 +366,7 @@ pub fn results(on: bool, r: &Report) {
         "  {}",
         fg(
             GRAY,
-            "1-in / 1-out spend (membership + key image + range + balance).",
+            "a whole tx in a set of 2^20 (membership + nullifiers + amounts + balance).",
             on
         )
     );
@@ -446,22 +437,8 @@ fn mining_panel(on: bool, r: &Report) {
     }
     let title = Seg::new(on)
         .cb(WHITE, "MINING HASH")
-        .d("   all CPU threads that fit in RAM, 30 s each (Argon2 t=1 · p=1 · 32-byte)");
+        .d("   all CPU threads, 30 s each");
     let mut lines = Vec::new();
-    match r.faithful {
-        Some(true) => lines.push(
-            Seg::new(on)
-                .c(GREEN, "✓")
-                .d(" reproduction matches blocknet_pow_hash at 2 GiB"),
-        ),
-        Some(false) => lines.push(
-            Seg::new(on)
-                .c(RED, "✗")
-                .d(" MISMATCH vs blocknet_pow_hash -- numbers suspect"),
-        ),
-        None => lines.push(Seg::new(on).d("faithfulness check skipped (2 GiB did not fit)")),
-    }
-    lines.push(Seg::new(on));
     for h in &r.hashes {
         let label = crate::mining::label(h.pow);
         if !h.ran {
@@ -489,4 +466,38 @@ fn mining_panel(on: bool, r: &Report) {
         }
     }
     println!("\n{}", panel(title, lines, on));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_prints_with_every_shape() {
+        let st = Stats::of(&[1.0, 2.0, 3.0]);
+        let mut ops = vec![
+            Op { side: Side::Legacy, shape: 0, verb: "sign", time: st, cpu: st },
+            Op { side: Side::Legacy, shape: 0, verb: "verify", time: st, cpu: st },
+        ];
+        let mut proofs = vec![];
+        let mut wire = vec![];
+        for n in vole::SHAPES {
+            ops.push(Op { side: Side::New, shape: n, verb: "prove", time: st, cpu: st });
+            ops.push(Op { side: Side::New, shape: n, verb: "verify", time: st, cpu: st });
+            proofs.push((n, vole::proof_bytes(n)));
+            wire.push(vole::wire::measure(n, vole::proof_bytes(n)));
+        }
+        let r = Report {
+            sig_bytes: 1120,
+            proofs,
+            ops,
+            leg_mem_mb: Some(st),
+            new_mem_mb: Some(st),
+            hashes: vec![],
+            wire,
+            set_ms: 135.0,
+        };
+        results(false, &r);
+        results(true, &r);
+    }
 }

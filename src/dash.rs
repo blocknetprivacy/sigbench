@@ -12,18 +12,17 @@ use crate::mining::{self, Pow};
 use crate::scenes::*;
 use crate::miner::Mined;
 use crate::ui::{fmt_hash_time, fmt_rate};
-use pqc_poc::faraday5 as ff;
 
 const FPS: u64 = 20;
+const SHAPE_LABELS: [&str; 4] = ["2 in / 2 out", "4 in / 4 out", "8 in / 8 out", "16 in / 16 out"];
 
 static GO: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Stage {
     Legacy,
-    Spend,
+    Spend(usize),
     Hash(Pow),
-    Fold,
     Done,
 }
 
@@ -36,13 +35,6 @@ struct HashLive {
     skipped: bool,
 }
 
-enum FoldState {
-    Waiting,
-    Running(Instant),
-    Done { bytes: usize, secs: f64, block_n: usize },
-    Skipped,
-}
-
 struct Live {
     ready: bool,
     error: Option<String>,
@@ -51,16 +43,14 @@ struct Live {
     n_new: usize,
     leg_sign: Vec<f64>,
     leg_verify: Vec<f64>,
-    new_prove: Vec<f64>,
-    new_prove_cpu: Vec<f64>,
-    new_verify: Vec<f64>,
+    new_prove: Vec<Vec<f64>>,
+    new_prove_cpu: Vec<Vec<f64>>,
+    new_verify: Vec<Vec<f64>>,
     sig_bytes: usize,
-    proof_bytes: usize,
+    proof_bytes: Vec<usize>,
+    set_ms: f64,
     hashes: Vec<(Pow, HashLive)>,
-    faithful: Option<bool>,
-    checking_pow: bool,
     gpus: Vec<String>,
-    fold: FoldState,
     peak_rss: u64,
 }
 
@@ -113,31 +103,21 @@ fn spread(v: &[f64]) -> String {
 fn scene_of(stage: Stage) -> Scene {
     match stage {
         Stage::Legacy => Scene::Ring,
-        Stage::Spend => Scene::Lattice,
-        Stage::Hash(Pow::Argon2(mining::CURRENT_MIB)) => Scene::Argon2id,
-        Stage::Hash(Pow::Argon2(_)) => Scene::Argon2d,
+        Stage::Spend(i) => if i % 2 == 0 { Scene::Spend } else { Scene::Select },
         Stage::Hash(Pow::Blake2b512) => Scene::Blake2b,
-        Stage::Hash(Pow::Sha3_512) => Scene::Sha3,
-        Stage::Fold => Scene::Fold,
         Stage::Done => Scene::Report,
     }
 }
 
 fn pow_name(pow: Pow) -> &'static str {
     match pow {
-        Pow::Argon2(mining::CURRENT_MIB) => "Argon2id 2 GiB",
-        Pow::Argon2(_) => "Argon2d 512 MiB",
         Pow::Blake2b512 => "BLAKE2b-512",
-        Pow::Sha3_512 => "SHA3-512",
     }
 }
 
 fn report_pow_name(pow: Pow) -> &'static str {
     match pow {
-        Pow::Argon2(mining::CURRENT_MIB) => "Argon2id 2 GiB (current)",
-        Pow::Argon2(_) => "Argon2d 512 MiB (A)",
-        Pow::Blake2b512 => "BLAKE2b-512 (B)",
-        Pow::Sha3_512 => "SHA3-512 (C)",
+        Pow::Blake2b512 => "BLAKE2b-512",
     }
 }
 
@@ -151,16 +131,14 @@ pub fn run(n_legacy: usize, n_new: usize, seed: u64) {
         n_new,
         leg_sign: vec![],
         leg_verify: vec![],
-        new_prove: vec![],
-        new_prove_cpu: vec![],
-        new_verify: vec![],
+        new_prove: vec![vec![]; vole::SHAPES.len()],
+        new_prove_cpu: vec![vec![]; vole::SHAPES.len()],
+        new_verify: vec![vec![]; vole::SHAPES.len()],
         sig_bytes: 0,
-        proof_bytes: 0,
+        proof_bytes: vec![0; vole::SHAPES.len()],
+        set_ms: 0.0,
         hashes: mining::LEVELS.iter().map(|p| (*p, HashLive::default())).collect(),
-        faithful: None,
         gpus: Vec::new(),
-        checking_pow: false,
-        fold: FoldState::Waiting,
         peak_rss: 0,
     }));
     let worker = {
@@ -169,7 +147,6 @@ pub fn run(n_legacy: usize, n_new: usize, seed: u64) {
     };
 
     let mut cx = SceneCtx::new(start_info(&m));
-    cx.fold_period = 12.0;
     let mut screen = Screen::open();
     let start = Instant::now();
     let mut stage = Stager::new(Scene::Boot);
@@ -187,7 +164,7 @@ pub fn run(n_legacy: usize, n_new: usize, seed: u64) {
         let Some((run_start, visuals)) = run else {
             let ready = l.ready;
             drop(l);
-            let g = start_screen(w, h, global, &mut cx, ready, "preparing the spend circuit");
+            let g = start_screen(w, h, global, &mut cx, ready, "building the 2^20 coin set");
             screen.show(&g, FPS);
             if let Some(v) = start_key() {
                 if ready {
@@ -199,12 +176,6 @@ pub fn run(n_legacy: usize, n_new: usize, seed: u64) {
         };
         let cur = l.stage.unwrap_or(Stage::Legacy);
         stage.set(scene_of(cur));
-        for (pow, secs) in [(Pow::Argon2(mining::CURRENT_MIB), &mut cx.argon_id_secs), (Pow::Argon2(mining::FARADAY_MIB), &mut cx.argon_d_secs)] {
-            let m = l.hash_ref(pow).mined;
-            if m.hashes > 0 {
-                *secs = (m.ms_per_hash() / 1000.0) as f32;
-            }
-        }
         let done = cur == Stage::Done;
         let suites = suites(&l, cur);
         let (panel, headline, lines, progress) = readout(&l, cur, &m);
@@ -251,15 +222,15 @@ pub fn run(n_legacy: usize, n_new: usize, seed: u64) {
             println!("{}", r.txt);
             println!("{}", r.saved);
         }
-        None => println!("Bench 2 stopped before the end; no report was saved."),
+        None => println!("Bench 3 stopped before the end; no report was saved."),
     }
     drop(worker);
 }
 
 fn work(live: Arc<Mutex<Live>>, n_legacy: usize, n_new: usize, seed: u64) {
-    let prep = ff::prepare();
-    if let Err(e) = ff::self_check() {
-        live.lock().unwrap().error = Some(format!("Faraday circuit conformance FAILED: {e}"));
+    let prep = vole::prepare();
+    if let Err(e) = vole::self_check(&prep) {
+        live.lock().unwrap().error = Some(format!("spend proof gate FAILED: {e}"));
         return;
     }
     let wit = legacy::make_witness(50_000, 7);
@@ -271,6 +242,7 @@ fn work(live: Arc<Mutex<Live>>, n_legacy: usize, n_new: usize, seed: u64) {
     {
         let mut l = live.lock().unwrap();
         l.sig_bytes = probe.len();
+        l.set_ms = vole::set_digest_ms(&prep);
         l.ready = true;
     }
     while !GO.load(Ordering::SeqCst) {
@@ -287,18 +259,21 @@ fn work(live: Arc<Mutex<Live>>, n_legacy: usize, n_new: usize, seed: u64) {
                 l.n_legacy = a;
                 l.n_new = b;
             }
-            Ev::ProofSize(n) => l.proof_bytes = n,
+            Ev::ProofSize(i, n) => l.proof_bytes[i] = n,
             Ev::Op(k, t, c) => {
                 match k {
                     OpKind::LegSign => l.leg_sign.push(t),
                     OpKind::LegVerify => l.leg_verify.push(t),
-                    OpKind::NewProve => {
-                        l.new_prove.push(t);
-                        l.new_prove_cpu.push(c);
+                    OpKind::NewProve(i) => {
+                        l.new_prove[i].push(t);
+                        l.new_prove_cpu[i].push(c);
                     }
-                    OpKind::NewVerify => l.new_verify.push(t),
+                    OpKind::NewVerify(i) => l.new_verify[i].push(t),
                 }
-                l.stage = Some(if matches!(k, OpKind::LegSign | OpKind::LegVerify) { Stage::Legacy } else { Stage::Spend });
+                l.stage = Some(match k {
+                    OpKind::LegSign | OpKind::LegVerify => Stage::Legacy,
+                    OpKind::NewProve(i) | OpKind::NewVerify(i) => Stage::Spend(i),
+                });
             }
             Ev::HashPlan => {}
             Ev::Gpus(names) => {
@@ -316,14 +291,6 @@ fn work(live: Arc<Mutex<Live>>, n_legacy: usize, n_new: usize, seed: u64) {
                 if let Some(g) = l.hash(pow).gpu.get_mut(i) {
                     *g = Some(r);
                 }
-            }
-            Ev::HashVerify(None) => {
-                l.checking_pow = true;
-                l.stage = Some(Stage::Hash(Pow::Argon2(mining::CURRENT_MIB)));
-            }
-            Ev::HashVerify(Some(ok)) => {
-                l.checking_pow = false;
-                l.faithful = Some(ok);
             }
             Ev::HashSkip(pow, _) => {
                 let h = l.hash(pow);
@@ -346,20 +313,6 @@ fn work(live: Arc<Mutex<Live>>, n_legacy: usize, n_new: usize, seed: u64) {
     bench::run(&prep, &wit, n_legacy, n_new, seed, &QUIT, &mut cb);
     if QUIT.load(Ordering::Relaxed) {
         return;
-    }
-    let proof_bytes = live.lock().unwrap().proof_bytes;
-    if proof_bytes > 0 && mining::fold_fits() {
-        {
-            let mut l = live.lock().unwrap();
-            l.fold = FoldState::Running(Instant::now());
-            l.stage = Some(Stage::Fold);
-        }
-        let fold = ff::fold_two();
-        let (_meta, _relay, block_n, _bb) = crate::faraday_tx::measure(proof_bytes, fold.folded_bytes);
-        let mut l = live.lock().unwrap();
-        l.fold = FoldState::Done { bytes: fold.folded_bytes, secs: fold.fold_wall.as_secs_f64(), block_n };
-    } else {
-        live.lock().unwrap().fold = FoldState::Skipped;
     }
     live.lock().unwrap().stage = Some(Stage::Done);
 }
@@ -387,10 +340,9 @@ fn total_rate(h: &HashLive) -> f64 {
 fn order(s: Stage) -> usize {
     match s {
         Stage::Legacy => 0,
-        Stage::Spend => 1,
+        Stage::Spend(_) => 1,
         Stage::Hash(p) => 2 + mining::LEVELS.iter().position(|x| *x == p).unwrap_or(0),
-        Stage::Fold => 6,
-        Stage::Done => 7,
+        Stage::Done => 6,
     }
 }
 
@@ -400,7 +352,7 @@ fn suites(l: &Live, cur: Stage) -> Vec<Suite> {
             SuiteState::Skipped
         } else if order(s) < order(cur) {
             SuiteState::Done
-        } else if s == cur {
+        } else if order(s) == order(cur) {
             SuiteState::Active
         } else {
             SuiteState::Pending
@@ -418,13 +370,14 @@ fn suites(l: &Live, cur: Stage) -> Vec<Suite> {
             _ => String::new(),
         },
     });
-    let ss = state(Stage::Spend, false);
+    let ss = state(Stage::Spend(0), false);
+    let done_new: usize = l.new_verify.iter().map(|v| v.len()).sum();
     v.push(Suite {
-        name: "Faraday spend",
+        name: "zk-VOLEitH spend",
         state: ss,
         result: match ss {
-            SuiteState::Done => fmt_ms(avg(&l.new_prove)),
-            SuiteState::Active => pct(l.new_verify.len() as f32 / l.n_new.max(1) as f32),
+            SuiteState::Done => fmt_ms(avg(&l.new_prove[0])),
+            SuiteState::Active => pct(done_new as f32 / l.n_new.max(1) as f32),
             _ => String::new(),
         },
     });
@@ -441,21 +394,10 @@ fn suites(l: &Live, cur: Stage) -> Vec<Suite> {
             },
         });
     }
-    let fs = state(Stage::Fold, matches!(l.fold, FoldState::Skipped));
-    v.push(Suite {
-        name: "Block fold",
-        state: fs,
-        result: match &l.fold {
-            FoldState::Done { bytes, .. } => fmt_bytes(*bytes),
-            FoldState::Skipped => "skipped".into(),
-            FoldState::Running(t) => fmt_secs(t.elapsed().as_secs_f64()),
-            FoldState::Waiting => String::new(),
-        },
-    });
     v
 }
 
-fn readout(l: &Live, cur: Stage, m: &Machine) -> (&'static str, String, Vec<String>, Option<f32>) {
+fn readout(l: &Live, cur: Stage, _m: &Machine) -> (&'static str, String, Vec<String>, Option<f32>) {
     match cur {
         Stage::Legacy => {
             let (s, v, n) = (l.leg_sign.len(), l.leg_verify.len(), l.n_legacy);
@@ -470,17 +412,19 @@ fn readout(l: &Live, cur: Stage, m: &Machine) -> (&'static str, String, Vec<Stri
                 Some((s + v) as f32 / (2 * n.max(1)) as f32),
             )
         }
-        Stage::Spend => {
-            let (p, v, n) = (l.new_prove.len(), l.new_verify.len(), l.n_new);
+        Stage::Spend(i) => {
+            let per = l.n_new / vole::SHAPES.len().max(1);
+            let (p, v) = (l.new_prove[i].len(), l.new_verify[i].len());
+            let sh = vole::SHAPES[i];
             let avg_or = |x: &[f64]| if x.is_empty() { "…".to_string() } else { fmt_ms(avg(x)) };
             (
-                "Faraday spend",
-                format!("{p}/{n} proved  ·  {v}/{n} verified"),
+                "zk-VOLEitH spend",
+                format!("{sh} in / {sh} out  ·  {p}/{per} proved  ·  {v}/{per} verified"),
                 vec![
-                    format!("prove {}  ·  verify {}  ·  {}", avg_or(&l.new_prove), avg_or(&l.new_verify), fmt_bytes(l.proof_bytes)),
-                    "anonymity set: every Faraday output (full chain)".into(),
+                    format!("prove {}  ·  verify {}  ·  {}", avg_or(&l.new_prove[i]), avg_or(&l.new_verify[i]), fmt_bytes(l.proof_bytes[i])),
+                    format!("anonymity set: {} coins  ·  no fold, no trusted setup", vole::set_size()),
                 ],
-                Some(v as f32 / n.max(1) as f32),
+                Some((i * per + v) as f32 / l.n_new.max(1) as f32),
             )
         }
         Stage::Hash(pow) => {
@@ -496,23 +440,8 @@ fn readout(l: &Live, cur: Stage, m: &Machine) -> (&'static str, String, Vec<Stri
                 gpu_lines.push("GPU  none found".into());
             }
             let (headline, extra) = match pow {
-                Pow::Argon2(mib) => {
-                    let what = if mib == mining::CURRENT_MIB { "current PoW" } else { "PoW candidate A" };
-                    let check = match l.faithful {
-                        _ if mib != mining::CURRENT_MIB => "512 MiB of memory per hash".to_string(),
-                        Some(true) => "2 GiB per hash  ·  matches the node's PoW hash ✓".into(),
-                        Some(false) => "2 GiB per hash  ·  does NOT match the node's PoW hash".into(),
-                        None => "2 GiB per hash".into(),
-                    };
-                    let head = if l.checking_pow {
-                        "checking the hash against the node's code…".into()
-                    } else {
-                        format!("{what}  ·  mining {:.0} / {:.0} s  ·  {} hashes", mined(h) * mining::MINE_SECONDS as f32, mining::MINE_SECONDS, h.mined.hashes)
-                    };
-                    (head, check)
-                }
                 _ => {
-                    let what = if pow == Pow::Blake2b512 { "PoW candidate B" } else { "PoW candidate C" };
+                    let what = if pow == Pow::Blake2b512 { "PoW candidate A" } else { "PoW candidate B" };
                     (format!("{what}  ·  mining {:.0} / {:.0} s", mined(h) * mining::MINE_SECONDS as f32, mining::MINE_SECONDS), "no memory per hash".into())
                 }
             };
@@ -520,21 +449,6 @@ fn readout(l: &Live, cur: Stage, m: &Machine) -> (&'static str, String, Vec<Stri
             lines.extend(gpu_lines);
             lines.push(extra);
             (pow_name(pow), headline, lines, Some(mined(h)))
-        }
-        Stage::Fold => {
-            let secs = match &l.fold {
-                FoldState::Running(t) => t.elapsed().as_secs_f64(),
-                _ => 0.0,
-            };
-            (
-                "Block fold",
-                "proving two spends and folding them into one proof".into(),
-                vec![
-                    format!("{} elapsed  ·  peak RAM {}", fmt_secs(secs), fmt_bytes(l.peak_rss as usize)),
-                    format!("the heaviest step: about 11 GB of RAM  ·  this machine has {}", m.ram()),
-                ],
-                None,
-            )
         }
         Stage::Done => ("", String::new(), vec![], None),
     }
@@ -561,28 +475,33 @@ fn report_sections(l: &Live, m: &Machine, visuals: bool, secs: f64) -> Vec<(&'st
             ("samples", l.leg_sign.len().to_string()),
         ],
     ));
-    v.push((
-        "Faraday spend",
-        vec![
-            ("prove", spread(&l.new_prove)),
-            ("prove CPU", format!("{:.0}% (about {:.1} cores busy)", avg(&l.new_prove_cpu), avg(&l.new_prove_cpu) / 100.0)),
-            ("verify", spread(&l.new_verify)),
-            ("size", fmt_bytes(l.proof_bytes)),
-            ("samples", l.new_prove.len().to_string()),
-        ],
-    ));
-    v.push((
-        "Block fold (2 spends)",
-        match &l.fold {
-            FoldState::Done { bytes, secs, block_n } => vec![
-                ("fold time", fmt_secs(*secs)),
-                ("size", fmt_bytes(*bytes)),
-                ("txs per block", format!("~{block_n} per 2 MB block")),
-            ],
-            _ => vec![("status", format!("skipped: the fold needs 16 GB of RAM (this machine has {})", m.ram()))],
-        },
-    ));
-    let mut pow_rows: Vec<(&'static str, String)> = l
+    let mut spend = vec![
+        ("set", format!("{} coins  ·  digest {:.0} ms once", vole::set_size(), l.set_ms)),
+        ("security", vole::params::SECURITY.to_string()),
+    ];
+    let mut block = vec![];
+    for (i, &n) in vole::SHAPES.iter().enumerate() {
+        if l.new_prove[i].is_empty() {
+            continue;
+        }
+        spend.push((SHAPE_LABELS[i], format!(
+            "prove {}  ·  verify {}  ·  {}  ·  CPU {:.0}%",
+            fmt_ms(avg(&l.new_prove[i])),
+            fmt_ms(avg(&l.new_verify[i])),
+            fmt_bytes(l.proof_bytes[i]),
+            avg(&l.new_prove_cpu[i])
+        )));
+        let w = vole::wire::measure(n, l.proof_bytes[i]);
+        block.push((SHAPE_LABELS[i], format!(
+            "tx {}  ·  {} per 2 MB block  ·  {} after pruning proofs",
+            fmt_bytes(w.relay),
+            w.per_block,
+            w.per_block_pruned
+        )));
+    }
+    v.push(("zk-VOLEitH spend", spend));
+    v.push(("Block (2 MB, no fold)", block));
+    let pow_rows: Vec<(&'static str, String)> = l
         .hashes
         .iter()
         .map(|(pow, h)| {
@@ -601,9 +520,6 @@ fn report_sections(l: &Live, m: &Machine, visuals: bool, secs: f64) -> Vec<(&'st
         })
         .flatten()
         .collect();
-    if let Some(ok) = l.faithful {
-        pow_rows.push(("matches node PoW", if ok { "yes".into() } else { "NO".into() }));
-    }
     v.push(("Proof of work", pow_rows));
     v
 }

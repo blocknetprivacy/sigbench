@@ -1,4 +1,4 @@
-src/gpu/kernels.cu and src/gpu/kernels.metal are derived from the seine miner's Argon2id kernels
+src/gpu/kernels.cu and src/gpu/kernels.metal (BLAKE2b and SHA3 mining) are derived from the seine miner's kernels
 by zpalmtree (https://github.com/zpalmtree/seine), licensed under the BSD 3-Clause License:
 
 Copyright (c) zpalmtree. All rights reserved.
@@ -26,6 +26,13 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF 
 IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-patches/p3-recursion is Plonky3-recursion (https://github.com/Plonky3/Plonky3-recursion) at
-commit 485455c0487a0a71d8fb9ccf9f04258f5c7397d5 with local changes, licensed under MIT OR
-Apache-2.0. See patches/p3-recursion/LICENSE-MIT and patches/p3-recursion/LICENSE-APACHE.
+spend/ is the zk-VOLEitH spend proof (MIT). It is derived from gby2023/Shorter-VOLEitH-Signatures
+(MIT, copyright Boyuan Gao, Zongyang Zhang, Weihan Li, Jianwei Liu and Jianting Ning) and
+faest-sign/faest-arch-opt (MIT, copyright the FAEST Team). See spend/LICENSE and spend/NOTICE.
+spend/subprojects/xkcp is the eXtended Keccak Code Package, see spend/subprojects/xkcp/LICENSE.
+
+showcase/assets/JetBrainsMono-*.ttf is JetBrains Mono, licensed under the SIL Open Font License 1.1,
+see showcase/assets/JetBrainsMono-OFL.txt.
+
+showcase/assets/NotoSansSC-Regular.otf is Noto Sans SC, licensed under the SIL Open Font License 1.1,
+see showcase/assets/NotoSansSC-OFL.txt. Only the glyphs the program uses are built into the binary.

@@ -1,21 +1,20 @@
 [workspace]
-members = ["pqc"]
+members = ["vole", "showcase"]
 
 [package]
 publish = false
 name = "sig-bench"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Head-to-head benchmark: legacy Blocknet RingCT signatures vs Faraday post-quantum STARK spend proofs (time / CPU / memory)."
+description = "Head-to-head benchmark: legacy Blocknet RingCT signatures vs post-quantum zk-VOLEitH spend proofs (time / CPU / memory / size)."
 
 [[bin]]
 name = "sig-bench"
 path = "src/main.rs"
 
 [dependencies]
-pqc-poc = { path = "pqc" }
+vole = { path = "vole" }
 blocknet_crypto = { version = "0.18.0", git = "https://github.com/blocknetprivacy/core.git", rev = "89e1aebdbbb5e11ad1d4196d9472c5f8b0956177", package = "crypto-rs" }
-argon2 = "0.5"
 sha3 = "0.10"
 blake2 = "0.10"
 ml-kem = "=0.3.2"
@@ -39,6 +38,3 @@ windows-sys = { version = "0.59", features = [
 
 [profile.release]
 opt-level = 3
-
-[patch."https://github.com/Plonky3/Plonky3-recursion.git"]
-p3-recursion = { path = "patches/p3-recursion" }

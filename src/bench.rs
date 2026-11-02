@@ -6,23 +6,22 @@ use crate::metrics::{cpu_pct, process_cpu_time};
 use crate::mining;
 use crate::gpu;
 use crate::miner;
-use pqc_poc::faraday5::{self as ff, Prepared};
+use vole::Prepared;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
     LegSign,
     LegVerify,
-    NewProve,
-    NewVerify,
+    NewProve(usize),
+    NewVerify(usize),
 }
 
 #[allow(dead_code)]
 pub enum Ev {
     Totals(usize, usize),
     Op(OpKind, f64, f64),
-    ProofSize(usize),
+    ProofSize(usize, usize),
     HashPlan,
-    HashVerify(Option<bool>),
     HashSkip(mining::Pow, &'static str),
     HashStart(mining::Pow),
     Gpus(Vec<String>),
@@ -57,9 +56,9 @@ pub fn run(
     cb: &mut dyn FnMut(Ev),
 ) {
     let _ = legacy::verify(wit, &legacy::sign(wit));
-    let _ = ff::run_one(prep, 1, &process_cpu_time);
+    let _ = vole::run_one(prep, 2, 1, process_cpu_time);
 
-    cb(Ev::Totals(n_legacy, n_new));
+    cb(Ev::Totals(n_legacy, n_new * vole::SHAPES.len()));
 
     let mut sigs = Vec::with_capacity(n_legacy);
     for _ in 0..n_legacy {
@@ -81,25 +80,21 @@ pub fn run(
         cb(Ev::Op(OpKind::LegVerify, ms(wall), cpu_pct(cpu, wall)));
     }
 
-    for i in 0..n_new {
-        if stop.load(Ordering::Relaxed) {
-            cb(Ev::Done);
-            return;
+    for (si, &n) in vole::SHAPES.iter().enumerate() {
+        for i in 0..n_new {
+            if stop.load(Ordering::Relaxed) {
+                cb(Ev::Done);
+                return;
+            }
+            let m = vole::run_one(prep, n, seed + i as u64, process_cpu_time);
+            cb(Ev::ProofSize(si, m.proof_bytes));
+            cb(Ev::Op(OpKind::NewProve(si), ms(m.prove_wall), cpu_pct(m.prove_cpu, m.prove_wall)));
+            cb(Ev::Op(OpKind::NewVerify(si), ms(m.verify_wall), cpu_pct(m.verify_cpu, m.verify_wall)));
         }
-        let m = ff::run_one(prep, seed + i as u64, &process_cpu_time);
-        cb(Ev::ProofSize(m.proof_bytes));
-        cb(Ev::Op(OpKind::NewProve, ms(m.prove_wall), cpu_pct(m.prove_cpu, m.prove_wall)));
-        cb(Ev::Op(OpKind::NewVerify, ms(m.verify_wall), cpu_pct(m.verify_cpu, m.verify_wall)));
     }
 
     if !stop.load(Ordering::Relaxed) {
         cb(Ev::HashPlan);
-
-        if miner::cpu_threads(mining::Pow::Argon2(mining::CURRENT_MIB)) > 0 {
-            cb(Ev::HashVerify(None));
-            let ok = mining::faithful_2gib();
-            cb(Ev::HashVerify(Some(ok)));
-        }
 
         let gpus = gpu::devices();
         cb(Ev::Gpus(gpus.iter().map(|d| d.name.clone()).collect()));
@@ -113,7 +108,7 @@ pub fn run(
                 continue;
             }
             cb(Ev::HashStart(pow));
-            let after_cpu = gpu::SHARES_RAM && matches!(pow, mining::Pow::Argon2(_));
+            let after_cpu = false;
             let (tx, rx) = std::sync::mpsc::channel::<Ev>();
             let spawn_gpus = |tx: std::sync::mpsc::Sender<Ev>| -> Vec<std::thread::JoinHandle<()>> {
                 gpus.iter()

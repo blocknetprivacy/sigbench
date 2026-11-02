@@ -1,0 +1,33 @@
+[package]
+publish = false
+name = "showcase"
+version = "0.3.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "showcase"
+path = "src/main.rs"
+
+[dependencies]
+vole = { path = "../vole" }
+ml-kem = "=0.3.2"
+sha3 = "0.10"
+wgpu = "30.0.1"
+winit = "0.30.13"
+pollster = "1.0.1"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+ab_glyph = "0.2.32"
+sys-locale = "0.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "=0.33.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+ab_glyph = "0.2.32"
+
+[dev-dependencies]
+blake2 = "0.10"
